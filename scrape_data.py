@@ -1,7 +1,9 @@
 import argparse
+
+from src import config  # Import the central config
 from src.scrape_features import run_feature_scraping_pipeline
 from src.scrapers.scrape_feature_utils.general_utils import create_output_directories
-from src import config  # Import the central config
+
 
 def main(num_weeks: int):
     """

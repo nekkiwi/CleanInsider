@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
-from bs4 import BeautifulSoup
+
 from src.scrapers.scrape_openinsider import scrape_openinsider
+
 
 def test_scrape_openinsider_parsing(mocker, test_data_dir):
     """
