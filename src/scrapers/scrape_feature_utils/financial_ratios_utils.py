@@ -1,6 +1,8 @@
+from functools import lru_cache
+from pathlib import Path
+
 import pandas as pd
 import yfinance as yf
-from functools import lru_cache
 
 # Define sectors for one-hot encoding
 SECTORS = ['Consumer Cyclical', 'Financial Services', 'Healthcare', 'Industrials', 'Technology']
@@ -9,19 +11,22 @@ def _get_sector_dummies(sector: str) -> dict:
     """Creates one-hot encoded sector features."""
     return {f'Sector_{s}': 1 if s == sector else 0 for s in SECTORS}
 
-# **FIX: Removed the unhashable 'config' argument from the cached function.**
+def get_ratios_from_edgar(
+    ticker: str, filing_date: pd.Timestamp, edgar_root: Path
+) -> dict:
+    """Placeholder for an EDGAR scraper. Returns an empty dict if data is missing."""
+    return {}
+
+
 @lru_cache(maxsize=512)
-def get_financial_ratios_for_filing(ticker: str) -> dict:
-    """
-    Gets a comprehensive set of financial ratios and sector info from yfinance.
-    Now cached to avoid repeated API calls for the same ticker.
-    """
+def get_ratios_from_yf(ticker: str, filing_date: pd.Timestamp) -> dict:
+    """Retrieve ratios from yfinance."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         financials = stock.financials.iloc[:, 0] if not stock.financials.empty else pd.Series()
         cashflow = stock.cashflow.iloc[:, 0] if not stock.cashflow.empty else pd.Series()
-        
+
         market_cap = info.get('marketCap')
         net_income = financials.get('Net Income')
 
@@ -39,10 +44,22 @@ def get_financial_ratios_for_filing(ticker: str) -> dict:
             'Operating_Cash_Flow_to_Market_Cap': cashflow.get('Operating Cash Flow') / market_cap if market_cap else None,
             'Net_Income_to_Market_Cap': net_income / market_cap if market_cap and net_income else None
         }
-        
+
         sector = info.get('sector', 'Other')
         ratios.update(_get_sector_dummies(sector))
 
         return {k: v for k, v in ratios.items() if v is not None}
     except Exception:
         return {}
+
+
+def get_financial_ratios_for_filing(
+    ticker: str, filing_date: pd.Timestamp, edgar_root: Path
+) -> dict:
+    """Try EDGAR first, then fall back to yfinance."""
+    ratios = get_ratios_from_edgar(ticker, filing_date, edgar_root)
+    if ratios:
+        return ratios
+
+    return get_ratios_from_yf(ticker, filing_date)
+
