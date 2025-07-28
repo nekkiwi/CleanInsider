@@ -1,7 +1,12 @@
-import pandas as pd
-from unittest.mock import patch, MagicMock
 from pathlib import Path
-from src.scrapers.scrape_technical_indicators import scrape_all_technical_indicators, get_technical_indicators_for_filing
+from unittest.mock import MagicMock
+
+import pandas as pd
+
+from src.scrapers.scrape_technical_indicators import (
+    get_technical_indicators_for_filing,
+    scrape_all_technical_indicators,
+)
 
 # This test file focuses on the logic within scrape_technical_indicators.py
 # It mocks the lower-level functions from the utils file.

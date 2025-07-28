@@ -1,5 +1,7 @@
 import pandas as pd
+
 from src.scrapers.scrape_feature_utils.general_utils import merge_and_save_features
+
 
 def test_merge_and_save_features(test_data_dir):
     """

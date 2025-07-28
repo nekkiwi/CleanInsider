@@ -1,7 +1,13 @@
-import pandas as pd
-from unittest.mock import MagicMock
 from pathlib import Path
-from src.scrapers.scrape_financial_ratios import scrape_all_financial_ratios, get_financial_ratios_for_filing
+from unittest.mock import MagicMock
+
+import pandas as pd
+
+from src.scrapers.scrape_financial_ratios import (
+    get_financial_ratios_for_filing,
+    scrape_all_financial_ratios,
+)
+
 
 def test_get_financial_ratios_for_filing_edgar_success(monkeypatch):
     """

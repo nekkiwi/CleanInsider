@@ -11,8 +11,8 @@ import yfinance as yf
 if not hasattr(np, "NaN"):
     np.NaN = np.nan
 
-# 3. NOW, it is safe to import pandas_ta, as it will find the patched numpy.
-
+# Import pandas_ta after patching numpy so the library can access np.NaN
+import pandas_ta as ta  # noqa: E402,F401
 
 def calculate_indicators(stock_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -65,11 +65,30 @@ def calculate_indicators(stock_df: pd.DataFrame) -> pd.DataFrame:
 @lru_cache(maxsize=256)
 def _load_stooq_history(ticker: str, database_root: Path) -> pd.DataFrame:
     """Load historical price data for ``ticker`` from a local Stooq database."""
-    pattern = f"{ticker.upper()}.US*.txt"
-    try:
-        file_path = next(database_root.rglob(pattern))
-    except StopIteration:
+    patterns = [f"{ticker.upper()}*.txt", f"{ticker.lower()}*.txt"]
+    file_path = None
+    for pattern in patterns:
+        try:
+            file_path = next(database_root.rglob(pattern))
+            break
+        except StopIteration:
+            continue
+
+    if file_path is None:
         return pd.DataFrame()
+
+    dtypes = {
+        0: str,
+        1: str,
+        2: str,
+        3: str,
+        4: float,
+        5: float,
+        6: float,
+        7: float,
+        8: float,
+        9: float,
+    }
 
     df = pd.read_csv(
         file_path,
@@ -86,8 +105,10 @@ def _load_stooq_history(ticker: str, database_root: Path) -> pd.DataFrame:
             "Volume",
             "OpenInt",
         ],
+        dtype=dtypes,
     )
-    df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d")
+    df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d", errors="coerce")
+    df.dropna(subset=["Date"], inplace=True)
     df.set_index("Date", inplace=True)
     df.sort_index(inplace=True)
     return df[["Open", "High", "Low", "Close", "Volume"]]

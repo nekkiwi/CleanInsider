@@ -1,6 +1,6 @@
-import pytest
 import pandas as pd
-from pathlib import Path
+import pytest
+
 
 @pytest.fixture(scope="session")
 def test_data_dir(tmp_path_factory):
