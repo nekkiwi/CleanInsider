@@ -62,7 +62,10 @@ def get_techn_ind_local(ticker: str, filing_date: pd.Timestamp, config) -> pd.Da
         pd.DataFrame: A single-row DataFrame with indicators.
     """
     # Get Stooq data path from the config object
-    stooq_path = config.STOOQ_DATA_PATH
+    # The config defines STOOQ_DATABASE_PATH as the root directory of the
+    # downloaded Stooq database. Use this value and handle a missing attribute
+    # gracefully so the scraper can fall back to the yfinance method.
+    stooq_path = getattr(config, "STOOQ_DATABASE_PATH", None)
     if not stooq_path.exists():
         return pd.DataFrame()
         
@@ -110,3 +113,29 @@ def get_tech_ind_yf(ticker: str, filing_date: pd.Timestamp) -> pd.DataFrame:
     
     # Return the last row, which corresponds to the filing date
     return indicators_df.tail(1)
+
+
+def get_technical_indicators_for_filing(
+    ticker: str, filing_date: pd.Timestamp, config
+) -> dict:
+    """Return technical indicators for a single filing.
+
+    The function first attempts to load locally stored stock data from the
+    Stooq database defined in ``config``. If that fails to provide data, it
+    falls back to downloading data from Yahoo Finance.  If both sources fail,
+    an empty dictionary is returned.
+    """
+
+    # 1. Try local Stooq data
+    local_df = get_techn_ind_local(ticker, filing_date, config)
+    if not local_df.empty:
+        # Convert the single-row dataframe into a dictionary of indicator values
+        return local_df.reset_index(drop=True).iloc[0].to_dict()
+
+    # 2. Fallback to Yahoo Finance
+    yf_df = get_tech_ind_yf(ticker, filing_date)
+    if not yf_df.empty:
+        return yf_df.reset_index(drop=True).iloc[0].to_dict()
+
+    # 3. If all methods fail, return an empty dict
+    return {}
