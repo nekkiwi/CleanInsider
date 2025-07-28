@@ -14,7 +14,6 @@ if not hasattr(np, "NaN"):
 # Import pandas_ta after patching numpy so the library can access np.NaN
 import pandas_ta as ta  # noqa: E402,F401
 
-
 def calculate_indicators(stock_df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculates a standard set of technical indicators on a stock history DataFrame.
@@ -90,6 +89,7 @@ def _load_stooq_history(ticker: str, database_root: Path) -> pd.DataFrame:
         8: float,
         9: float,
     }
+
     df = pd.read_csv(
         file_path,
         header=None,
