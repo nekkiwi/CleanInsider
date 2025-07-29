@@ -1,0 +1,71 @@
+name: Safe AI Doc + Lint
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  safe-ai-doc-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python, Black & Ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install black ruff jq
+
+      - name: Get changed .py files
+        id: files
+        run: |
+          git fetch origin main
+          CHANGED=$(git diff --name-only origin/main...HEAD -- '*.py' || true)
+          echo "::set-output name=py_files::$CHANGED"
+
+      - name: Generate & apply docstring patches
+        if: steps.files.outputs.py_files != ''
+        run: |
+          for file in ${{ steps.files.outputs.py_files }}; do
+            echo "📝 Processing $file"
+            jq -Rs --arg path "$file" \
+              '{ input:
+                 "Generate a unified diff patch that *adds* Python docstrings and inline comments to this file WITHOUT altering any logic. Use standard unified diff format:\n\n--- a/"+$path+"\n+++ b/"+$path+"\n"+. }' \
+              < "$file" > payload.json
+
+            RESPONSE=$(curl -s -X POST \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Content-Type: application/json" \
+              https://api.githubcopilot.com/models/gpt-4o-mini/completions \
+              -d @payload.json)
+
+            echo "$RESPONSE" | jq -r '.choices[0].message.content' > patch.diff
+
+            git apply --check patch.diff
+            git apply patch.diff
+
+            rm payload.json patch.diff
+          done
+
+      - name: Run Black & Ruff autofix
+        run: |
+          black .
+          ruff check . --fix
+
+      - name: Push changes & create PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ai-docs/${{ github.run_id }}
+          title: "AI: add docstrings & comments"
+          commit-message: "chore: apply AI‑generated docstrings"
+          body: |
+            This PR auto‑adds docstrings and inline comments via GitHub Models, then reformats with Black and auto‑fixes lint issues with Ruff.
+          base: main

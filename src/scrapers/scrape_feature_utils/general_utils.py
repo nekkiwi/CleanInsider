@@ -98,3 +98,54 @@ def report_missing_data(df: pd.DataFrame):
         print("Percentage of empty rows per feature column:")
         # Use to_string() to ensure the full report is printed without truncation
         print(missing_report.to_string())
+
+def create_composite_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Creates features that depend on data from multiple sources after the merge.
+    """
+    df_comp = df.copy()
+
+    # Insider Importance Score: Weighted sum of roles multiplied by the trade value
+    df_comp['Insider_Importance_Score'] = (
+        df_comp['CEO'] * 3 + 
+        df_comp['CFO'] * 3 + 
+        df_comp['Pres'] * 2 + 
+        df_comp['Dir'] * 1 + 
+        df_comp['VP'] * 1 +
+        df_comp['TenPercent'] * 0.5
+    ) * df_comp['Value']
+    
+    # Role-specific buy values
+    df_comp['CFO_Buy_Value'] = df_comp['Value'] * df_comp['CFO']
+    df_comp['Pres_Buy_Value'] = df_comp['Value'] * df_comp['Pres']
+    
+    # Value to Market Cap Ratio
+    if 'Market_Cap' in df_comp.columns and 'Value' in df_comp.columns:
+        # Use .loc to avoid SettingWithCopyWarning on a filtered view
+        valid_rows = (df_comp['Market_Cap'].notna()) & (df_comp['Market_Cap'] > 0)
+        df_comp.loc[valid_rows, 'Value_to_MarketCap'] = df_comp.loc[valid_rows, 'Value'] / df_comp.loc[valid_rows, 'Market_Cap']
+    
+    return df_comp
+
+
+def add_date_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates date-based features from the 'Filing Date' column
+    and adds them to the DataFrame.
+
+    This function is designed to be called from the scrapers.
+
+    Args:
+        df (pd.DataFrame): DataFrame with a 'Filing Date' column of type datetime.
+
+    Returns:
+        pd.DataFrame: The DataFrame with 'Day_Of_Year' and 'Day_Of_Quarter' added.
+    """
+    # Ensure 'Filing Date' is a datetime object before using the .dt accessor
+    filing_date_series = pd.to_datetime(df['Filing Date'], errors='coerce')
+    
+    df['Day_Of_Year'] = filing_date_series.dt.dayofyear
+    q_start_dates = filing_date_series.dt.to_period('Q').apply(lambda p: p.start_time)
+    df['Day_Of_Quarter'] = (filing_date_series - q_start_dates).dt.days + 1
+    
+    return df
