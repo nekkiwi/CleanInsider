@@ -1,28 +1,59 @@
-# Quantitative Finance Feature Scraping Pipeline
+# CleanInsider
 
-This project contains a Python-based pipeline designed to scrape, process, and consolidate financial data for quantitative analysis. It gathers insider trading information from OpenInsider, enriches it with technical indicators and financial ratios, and produces a clean, merged dataset ready for feature engineering and modeling.
+CleanInsider is a data pipeline that consolidates insider trading activity with market and fundamental metrics. The project scrapes multiple public sources, engineers features and outputs a machine‑learning ready dataset.
 
-## Features
+## Overview
 
-- **Modular Scrapers**: Separate, single-responsibility scripts for each data source (OpenInsider, Technical Indicators, Financial Ratios).
-- **Robust Fallback Logic**: Prioritizes fast, local data sources (Stooq) and official filings (EDGAR), with fallbacks to APIs (Yahoo Finance) if needed.
-- **Centralized Configuration**: All file paths and settings are managed in a central `config.py` file for easy modification.
-- **Dependency Management**: A `requirements.txt` file ensures a reproducible environment.
-- **Code Quality Enforcement**: Configured with `ruff` for linting and `black` for consistent code formatting.
+The pipeline collects insider purchase data from **OpenInsider**, fundamental information from **SEC EDGAR** filings, OHLCV price history from **Stooq**, and several U.S. macroeconomic indicators. Each module runs in parallel using **joblib** and displays progress with **tqdm**. Data is merged and post‑processed into a tidy feature table.
 
-## Directory Structure
+Key stages include:
 
-- `/data/`: Intended location for all scraped data and external datasets (e.g., Stooq). Ignored by Git.
-- `/src/`: Contains all the core source code for the scraping pipeline.
-- `scrape_data.py`: The main executable script to run the entire pipeline.
-- `requirements.txt`: A list of all Python packages required for this project.
-- `pyproject.toml`: Configuration file for development tools like `black` and `ruff`.
+1. **OpenInsider scraping** – weekly insider trades with role parsing and daily aggregation.
+2. **SEC EDGAR lookup** – recent quarterly fundamentals with engineered ratios.
+3. **Technical indicators** – moving averages, momentum and volatility features computed from Stooq price data.
+4. **Macro features** – selected macroeconomic series matched to filing dates.
+5. **Feature preprocessing** – remove highly missing or correlated columns, clip outliers and create composite metrics.
 
-## Setup Instructions
+The entry point `scrape_data.py` orchestrates scraping and preprocessing in one command.
 
-**1. Clone the Repository**
-git clone <your-repo-url>
-cd quantitative-finance-pipeline
+## Installation
 
-**2. Create and Activate a Virtual Environment**
-It is highly recommended to use a virtual environment to manage project-specific dependencies.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+The default paths for input datasets and outputs are defined in `src/config.py`. Adjust them if your local data lives elsewhere.
+
+## Usage
+
+Run the full pipeline for the latest three weeks of OpenInsider activity:
+
+```bash
+python scrape_data.py --weeks 3
+```
+
+The script creates a `data/` directory (ignored by Git) and saves both the raw merged features and the final preprocessed set in `data/scrapers/features/`.
+
+## Repository Structure
+
+- `src/` – scraping modules, preprocessing utilities and configuration
+- `scrape_data.py` – CLI wrapper that runs the pipeline end to end
+- `requirements.txt` – Python dependencies
+- `pyproject.toml` – formatting settings for **black** and **ruff**
+
+## Development
+
+The project uses **ruff** and **black** for linting and formatting. You can run them locally before committing:
+
+```bash
+ruff check src
+black src
+```
+
+GitHub Actions automatically runs these tools on pull requests and pushes to `main`.
+
+## License
+
+This repository is provided without a license. All rights reserved by the author.
