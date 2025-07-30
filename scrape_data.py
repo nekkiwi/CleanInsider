@@ -21,7 +21,7 @@ def main(num_weeks: int):
     print("...Environment setup complete.\n")
 
     # 2. Run the full feature scraping pipeline
-    run_feature_scraping_pipeline(num_weeks=num_weeks,config=config)
+    run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
     run_preprocess_pipeline(config=config, missing_thresh=25.0)
 
 
