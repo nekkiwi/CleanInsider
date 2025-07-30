@@ -2,21 +2,27 @@
 
 # --- All imports should be at the top level ---
 
-import pandas as pd
-from pathlib import Path
 import time
+from pathlib import Path
+
+import pandas as pd
+
+from scrapers.feature_scraper.feature_scraper_util.general_utils import (
+    add_date_features,
+    create_composite_features,
+    report_missing_data,
+)
+from scrapers.feature_scraper.load_macro_features import load_macro_feature_df
 
 # Your own module imports
 from scrapers.feature_scraper.load_sec_data import load_sec_features_df
-from scrapers.feature_scraper.load_technical_indicators import load_technical_indicators_df
-from scrapers.feature_scraper.load_macro_features import load_macro_feature_df
-from scrapers.feature_scraper.scrape_openinsider import scrape_openinsider
-from scrapers.feature_scraper.feature_scraper_util.general_utils import (
-    create_composite_features,
-    add_date_features,
-    report_missing_data
+from scrapers.feature_scraper.load_technical_indicators import (
+    load_technical_indicators_df,
 )
+from scrapers.feature_scraper.scrape_openinsider import scrape_openinsider
+
 # --- All class and function definitions should be at the top level ---
+
 
 def run_feature_scraping_pipeline(num_weeks: int, config):
     """
@@ -24,7 +30,7 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     The sub-modules now manage their own parallelism.
     """
     start_time = time.time()
-    
+
     # --- Step 1 is unchanged ---
     print("--- Step 1: Scraping base insider data from OpenInsider ---")
     base_df = scrape_openinsider(num_weeks=num_weeks)
@@ -32,63 +38,65 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
         print("No base data scraped from OpenInsider. Halting pipeline.")
         return
     print(f"   → Scraped {len(base_df)} initial records.")
-    base_df['Filing Date'] = pd.to_datetime(base_df['Filing Date'])
-    
+    base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
+
     # --- Step 2 & 3: Calls are now simpler ---
     print("\n--- Step 2: Generating SEC financial features (in parallel) ---")
     sec_df = load_sec_features_df(
         input_df=base_df.copy(),
         parquet_dir_str=config.EDGAR_DOWNLOAD_PATH,
         request_header=config.REQUESTS_HEADER,
-        n_prev=2
+        n_prev=2,
     )
     if not sec_df.empty:
-        sec_df['Filing Date'] = pd.to_datetime(sec_df['Filing Date'])
+        sec_df["Filing Date"] = pd.to_datetime(sec_df["Filing Date"])
 
     print("\n--- Step 3: Generating technical indicator features (in parallel) ---")
     technical_df = load_technical_indicators_df(
-        input_df=base_df.copy(),
-        db_path_str=config.STOOQ_DATABASE_PATH
+        input_df=base_df.copy(), db_path_str=config.STOOQ_DATABASE_PATH
     )
     if not technical_df.empty:
-        technical_df['Filing Date'] = pd.to_datetime(technical_df['Filing Date'])
+        technical_df["Filing Date"] = pd.to_datetime(technical_df["Filing Date"])
 
     # # --- Step 4: Macro features ---
     print("\n--- Step 4: Generating macroeconomic features ---")
-    dates_list = base_df['Filing Date'].unique().tolist()
+    dates_list = base_df["Filing Date"].unique().tolist()
     macro_df = load_macro_feature_df(
-        dates_list=dates_list,
-        stooq_db_dir=config.STOOQ_DATABASE_PATH
+        dates_list=dates_list, stooq_db_dir=config.STOOQ_DATABASE_PATH
     )
-    macro_df = macro_df.rename(columns={'Query_Date': 'Filing Date'})
-    macro_df['Filing Date'] = pd.to_datetime(macro_df['Filing Date'])
+    macro_df = macro_df.rename(columns={"Query_Date": "Filing Date"})
+    macro_df["Filing Date"] = pd.to_datetime(macro_df["Filing Date"])
 
     # --- Step 5: Merge ---
     print("\n--- Step 5: Merging all feature sets ---")
     final_df = base_df
     if not sec_df.empty:
-        final_df = pd.merge(final_df, sec_df, on=['Ticker', 'Filing Date'], how='left')
+        final_df = pd.merge(final_df, sec_df, on=["Ticker", "Filing Date"], how="left")
     if not technical_df.empty:
-        final_df = pd.merge(final_df, technical_df, on=['Ticker', 'Filing Date'], how='left')
+        final_df = pd.merge(
+            final_df, technical_df, on=["Ticker", "Filing Date"], how="left"
+        )
     if not macro_df.empty:
-        final_df = pd.merge(final_df, macro_df, on='Filing Date', how='left')
-    final_df = final_df.loc[:, ~final_df.columns.str.contains('^Unnamed')]
+        final_df = pd.merge(final_df, macro_df, on="Filing Date", how="left")
+    final_df = final_df.loc[:, ~final_df.columns.str.contains("^Unnamed")]
     print("   ✅ All feature sets successfully merged.")
-    
+
     # --- Steps 6, 7, 8 ... ---
     print("\n--- Step 6: Engineering final composite features ---")
     final_df = create_composite_features(final_df)
     final_df = add_date_features(final_df)
     print("   ✅ Final features created.")
-    
+
     print("\n--- Step 7: Final Data Quality Report ---")
     output_directory = Path(config.FEATURES_OUTPUT_PATH)
     report_missing_data(final_df, output_dir=output_directory)
 
     # --- NEW: Step 7.5: Save intermediate merged features BEFORE pruning ---
     intermediate_output_path = output_directory / "raw_features.parquet"
-    print(f"\n--- Step 7.5: Saving MERGED (pre-pruning) dataset to {intermediate_output_path} ---")
+    print(
+        f"\n--- Step 7.5: Saving MERGED (pre-pruning) dataset to {intermediate_output_path} ---"
+    )
     final_df.to_parquet(intermediate_output_path, index=False)
-    
+
     end_time = time.time()
     print(f"\n--- ✅ Pipeline Complete in {end_time - start_time:.2f} seconds ---")

@@ -4,11 +4,11 @@ target-version = ['py310']
 
 [tool.ruff]
 # Enable Pyflakes, pycodestyle, and isort rules.
-select = ["E", "F", "W", "I"]
+lint.select = ["E", "F", "W", "I"]
 line-length = 88
 
 # Ignore certain rules if needed, e.g., E501 (line too long), which black handles.
-ignore = ["E501"]
+lint.ignore = ["E501"]
 
-[tool.ruff.per-file-ignores]
+[lint.per-file-ignores]
 "__init__.py" = ["F401"] # Ignore unused imports in __init__.py files
