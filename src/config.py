@@ -13,8 +13,7 @@ STOOQ_DATABASE_PATH = DATA_DIR / "stooq_database"
 
 # --- Scraping Parameters ---
 # User agent for making polite requests
-REQUESTS_HEADER = {'User-Agent': 'YourName/YourProject my.email@domain.com'}
+REQUESTS_HEADER = {"User-Agent": "YourName/YourProject my.email@domain.com"}
 
 # List of all output directories to be created by the pipeline
 DIRECTORIES_TO_CREATE = [FEATURES_OUTPUT_PATH, FEATURES_INFO_OUTPUT_PATH]
-

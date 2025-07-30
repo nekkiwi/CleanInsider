@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+
 def create_output_directories(paths: list[Path]):
     """
     Creates directories if they do not already exist.
@@ -16,6 +17,7 @@ def create_output_directories(paths: list[Path]):
         except OSError as e:
             print(f"Error creating directory {path}: {e}")
             raise
+
 
 def report_missing_data(df: pd.DataFrame, output_dir: Path = None):
     """
@@ -32,7 +34,9 @@ def report_missing_data(df: pd.DataFrame, output_dir: Path = None):
         return
 
     missing_percentage = (df.isnull().sum() / len(df)) * 100
-    missing_report = missing_percentage[missing_percentage >= 0].sort_values(ascending=False)
+    missing_report = missing_percentage[missing_percentage >= 0].sort_values(
+        ascending=False
+    )
 
     report_string = ""
     if missing_report.empty:
@@ -51,11 +55,12 @@ def report_missing_data(df: pd.DataFrame, output_dir: Path = None):
         output_dir.mkdir(parents=True, exist_ok=True)
         report_path = output_dir / "info" / "missing_data_report.txt"
         try:
-            with open(report_path, 'w') as f:
+            with open(report_path, "w") as f:
                 f.write(report_string)
             print(f"\n💾 Missing data report saved to: {report_path}")
         except Exception as e:
             print(f"\n❌ Could not save missing data report: {e}")
+
 
 def create_composite_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -64,25 +69,27 @@ def create_composite_features(df: pd.DataFrame) -> pd.DataFrame:
     df_comp = df.copy()
 
     # Insider Importance Score: Weighted sum of roles multiplied by the trade value
-    df_comp['Insider_Importance_Score'] = (
-        df_comp['CEO'] * 3 + 
-        df_comp['CFO'] * 3 + 
-        df_comp['Pres'] * 2 + 
-        df_comp['Dir'] * 1 + 
-        df_comp['VP'] * 1 +
-        df_comp['TenPercent'] * 0.5
-    ) * df_comp['Value']
-    
+    df_comp["Insider_Importance_Score"] = (
+        df_comp["CEO"] * 3
+        + df_comp["CFO"] * 3
+        + df_comp["Pres"] * 2
+        + df_comp["Dir"] * 1
+        + df_comp["VP"] * 1
+        + df_comp["TenPercent"] * 0.5
+    ) * df_comp["Value"]
+
     # Role-specific buy values
-    df_comp['CFO_Buy_Value'] = df_comp['Value'] * df_comp['CFO']
-    df_comp['Pres_Buy_Value'] = df_comp['Value'] * df_comp['Pres']
-    
+    df_comp["CFO_Buy_Value"] = df_comp["Value"] * df_comp["CFO"]
+    df_comp["Pres_Buy_Value"] = df_comp["Value"] * df_comp["Pres"]
+
     # Value to Market Cap Ratio
-    if 'Market_Cap' in df_comp.columns and 'Value' in df_comp.columns:
+    if "Market_Cap" in df_comp.columns and "Value" in df_comp.columns:
         # Use .loc to avoid SettingWithCopyWarning on a filtered view
-        valid_rows = (df_comp['Market_Cap'].notna()) & (df_comp['Market_Cap'] > 0)
-        df_comp.loc[valid_rows, 'Value_to_MarketCap'] = df_comp.loc[valid_rows, 'Value'] / df_comp.loc[valid_rows, 'Market_Cap']
-    
+        valid_rows = (df_comp["Market_Cap"].notna()) & (df_comp["Market_Cap"] > 0)
+        df_comp.loc[valid_rows, "Value_to_MarketCap"] = (
+            df_comp.loc[valid_rows, "Value"] / df_comp.loc[valid_rows, "Market_Cap"]
+        )
+
     return df_comp
 
 
@@ -100,10 +107,10 @@ def add_date_features(df: pd.DataFrame) -> pd.DataFrame:
         pd.DataFrame: The DataFrame with 'Day_Of_Year' and 'Day_Of_Quarter' added.
     """
     # Ensure 'Filing Date' is a datetime object before using the .dt accessor
-    filing_date_series = pd.to_datetime(df['Filing Date'], errors='coerce')
-    
-    df['Day_Of_Year'] = filing_date_series.dt.dayofyear
-    q_start_dates = filing_date_series.dt.to_period('Q').apply(lambda p: p.start_time)
-    df['Day_Of_Quarter'] = (filing_date_series - q_start_dates).dt.days + 1
-    
+    filing_date_series = pd.to_datetime(df["Filing Date"], errors="coerce")
+
+    df["Day_Of_Year"] = filing_date_series.dt.dayofyear
+    q_start_dates = filing_date_series.dt.to_period("Q").apply(lambda p: p.start_time)
+    df["Day_Of_Quarter"] = (filing_date_series - q_start_dates).dt.days + 1
+
     return df
