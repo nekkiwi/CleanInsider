@@ -2,10 +2,8 @@ import argparse
 
 from src import config  # Import the central config
 from src.preprocess_features import run_preprocess_pipeline
-from src.scrapers.feature_scraper.feature_scraper_util.general_utils import (
-    create_output_directories,
-    run_feature_scraping_pipeline,
-)
+from src.scrape_features import run_feature_scraping_pipeline
+from src.scrapers.feature_scraper.feature_scraper_util.general_utils import create_output_directories
 
 
 def main(num_weeks: int):
