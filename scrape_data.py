@@ -4,6 +4,7 @@ from src import config  # Import the central config
 from src.preprocess_features import run_preprocess_pipeline
 from src.scrapers.feature_scraper.feature_scraper_util.general_utils import (
     create_output_directories,
+    run_feature_scraping_pipeline,
 )
 
 
@@ -20,7 +21,7 @@ def main(num_weeks: int):
     print("...Environment setup complete.\n")
 
     # 2. Run the full feature scraping pipeline
-    # run_feature_scraping_pipeline(num_weeks=num_weeks,config=config)
+    run_feature_scraping_pipeline(num_weeks=num_weeks,config=config)
     run_preprocess_pipeline(config=config, missing_thresh=25.0)
 
 
