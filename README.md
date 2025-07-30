@@ -8,14 +8,12 @@ This project contains a Python-based pipeline designed to scrape, process, and c
 - **Robust Fallback Logic**: Prioritizes fast, local data sources (Stooq) and official filings (EDGAR), with fallbacks to APIs (Yahoo Finance) if needed.
 - **Centralized Configuration**: All file paths and settings are managed in a central `config.py` file for easy modification.
 - **Dependency Management**: A `requirements.txt` file ensures a reproducible environment.
-- **Testing Suite**: Uses `pytest` to ensure code correctness and reliability through unit and integration tests.
 - **Code Quality Enforcement**: Configured with `ruff` for linting and `black` for consistent code formatting.
 
 ## Directory Structure
 
 - `/data/`: Intended location for all scraped data and external datasets (e.g., Stooq). Ignored by Git.
 - `/src/`: Contains all the core source code for the scraping pipeline.
-- `/tests/`: Contains all unit and integration tests.
 - `scrape_data.py`: The main executable script to run the entire pipeline.
 - `requirements.txt`: A list of all Python packages required for this project.
 - `pyproject.toml`: Configuration file for development tools like `black` and `ruff`.
