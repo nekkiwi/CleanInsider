@@ -91,12 +91,10 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     output_directory = Path(config.FEATURES_OUTPUT_PATH)
     report_missing_data(final_df, output_dir=output_directory)
 
-    # --- NEW: Step 7.5: Save intermediate merged features BEFORE pruning ---
-    intermediate_output_path = output_directory / "raw_features.parquet"
     print(
-        f"\n--- Step 7.5: Saving MERGED (pre-pruning) dataset to {intermediate_output_path} ---"
+        f"\n--- Step 7.5: Saving MERGED (pre-pruning) dataset to {config.RAW_FEATURES_PATH} ---"
     )
-    final_df.to_parquet(intermediate_output_path, index=False)
+    final_df.to_parquet(config.RAW_FEATURES_PATH, index=False)
 
     end_time = time.time()
     print(f"\n--- ✅ Pipeline Complete in {end_time - start_time:.2f} seconds ---")
