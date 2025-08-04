@@ -1,7 +1,5 @@
 # file: /src/scrapers/load_technical_indicators.py (Using 'ta' library with Joblib + TQDM)
 
-from functools import lru_cache
-from pathlib import Path
 
 import pandas as pd
 
@@ -15,13 +13,21 @@ from tqdm import tqdm
 from src.scrapers.data_loader import load_ohlcv_with_fallback
 
 STOOQ_COLUMN_MAP = {
-    "<DATE>": "Date", "<OPEN>": "Open", "<HIGH>": "High", "<LOW>": "Low",
-    "<CLOSE>": "Close", "<VOL>": "Volume",
+    "<DATE>": "Date",
+    "<OPEN>": "Open",
+    "<HIGH>": "High",
+    "<LOW>": "Low",
+    "<CLOSE>": "Close",
+    "<VOL>": "Volume",
 }
 
+
 # --- REWRITTEN INDICATOR CALCULATION USING 'ta' LIBRARY ---
-def calculate_indicators(stock_df: pd.DataFrame, is_market_instrument=False) -> pd.DataFrame:
+def calculate_indicators(
+    stock_df: pd.DataFrame, is_market_instrument=False
+) -> pd.DataFrame:
     import warnings
+
     warnings.filterwarnings("ignore", category=FutureWarning, module="ta.*")
 
     if stock_df.empty or len(stock_df) < 20:
@@ -52,30 +58,39 @@ def calculate_indicators(stock_df: pd.DataFrame, is_market_instrument=False) -> 
     # If it's a market instrument, we only keep a subset of columns
     if is_market_instrument:
         market_cols_to_keep = [
-            "trend_sma_fast", "trend_sma_slow", "momentum_rsi", "trend_macd",
-            "trend_macd_signal", "trend_macd_diff", "trend_adx", "volatility_bbm",
-            "volatility_bbh", "volatility_bbl",
+            "trend_sma_fast",
+            "trend_sma_slow",
+            "momentum_rsi",
+            "trend_macd",
+            "trend_macd_signal",
+            "trend_macd_diff",
+            "trend_adx",
+            "volatility_bbm",
+            "volatility_bbh",
+            "volatility_bbl",
         ]
-        
+
         final_cols = list(stock_df.columns)
-        
+
         # 1. Add 'Dist' columns, checking if the column name is a string first
         dist_cols = [
-            col for col in df.columns 
+            col
+            for col in df.columns
             if isinstance(col, str) and col.startswith("Dist_")
         ]
         final_cols.extend(dist_cols)
 
         # 2. Add 'ta' columns, also checking if the name is a string
         ta_cols = [
-            col for col in market_cols_to_keep 
+            col
+            for col in market_cols_to_keep
             if isinstance(col, str) and col in df.columns
         ]
         final_cols.extend(ta_cols)
-        
+
         # 3. Ensure no duplicate columns and filter the DataFrame
         final_cols = list(dict.fromkeys(final_cols))
-        
+
         # Ensure that all columns in final_cols actually exist in the dataframe before slicing
         existing_final_cols = [col for col in final_cols if col in df.columns]
         df = df[existing_final_cols]
@@ -136,8 +151,12 @@ def load_technical_indicators_df(
 ) -> pd.DataFrame:
     print("--- Pre-loading market instruments (SPX, VIXY) ---")
     market_data = {
-        "spx": calculate_indicators(load_ohlcv_with_fallback("^spx", db_path_str), is_market_instrument=True),
-        "vixy": calculate_indicators(load_ohlcv_with_fallback("vixy", db_path_str), is_market_instrument=True),
+        "spx": calculate_indicators(
+            load_ohlcv_with_fallback("^spx", db_path_str), is_market_instrument=True
+        ),
+        "vixy": calculate_indicators(
+            load_ohlcv_with_fallback("vixy", db_path_str), is_market_instrument=True
+        ),
     }
 
     work_items = list(input_df.groupby("Ticker")["Filing Date"].apply(list).items())
