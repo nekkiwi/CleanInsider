@@ -12,91 +12,73 @@ import ta
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-# --- DATA LOADING HELPER (Unchanged) ---
+from src.scrapers.data_loader import load_ohlcv_with_fallback
+
 STOOQ_COLUMN_MAP = {
-    "<DATE>": "Date",
-    "<OPEN>": "Open",
-    "<HIGH>": "High",
-    "<LOW>": "Low",
-    "<CLOSE>": "Close",
-    "<VOL>": "Volume",
+    "<DATE>": "Date", "<OPEN>": "Open", "<HIGH>": "High", "<LOW>": "Low",
+    "<CLOSE>": "Close", "<VOL>": "Volume",
 }
 
-
-@lru_cache(maxsize=512)
-def find_and_load_ohlcv_data(db_path_str: str, ticker: str) -> pd.DataFrame:
-    # This function is correct and remains unchanged
-    db_path = Path(db_path_str)
-    search_pattern = f"*{ticker.lower()}*.*"
-    found_files = list(db_path.rglob(search_pattern))
-    if not found_files:
-        return pd.DataFrame()
-    filepath = found_files[0]
-    try:
-        df = pd.read_csv(filepath)
-        df = df.rename(columns=STOOQ_COLUMN_MAP)
-        df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d", errors="coerce")
-        df.dropna(subset=["Date"], inplace=True)
-        df = df.set_index("Date")
-        ohlcv_cols = ["Open", "High", "Low", "Close", "Volume"]
-        df = df[ohlcv_cols].apply(pd.to_numeric, errors="coerce").dropna()
-        return df.sort_index()
-    except Exception:
-        return pd.DataFrame()
-
-
 # --- REWRITTEN INDICATOR CALCULATION USING 'ta' LIBRARY ---
-def calculate_indicators(
-    stock_df: pd.DataFrame, is_market_instrument=False
-) -> pd.DataFrame:
+def calculate_indicators(stock_df: pd.DataFrame, is_market_instrument=False) -> pd.DataFrame:
     import warnings
-
     warnings.filterwarnings("ignore", category=FutureWarning, module="ta.*")
 
-    if stock_df.empty or len(stock_df) < 20:  # Need enough data for most indicators
+    if stock_df.empty or len(stock_df) < 20:
         return stock_df
 
-    # Create a copy to avoid SettingWithCopyWarning
     df = stock_df.copy()
 
-    # Add all indicators and handle potential errors if data is too short
     try:
-        # Volume Indicators
+        # 'ta' library calls...
         df = ta.add_volume_ta(df, "High", "Low", "Close", "Volume", fillna=True)
-        # Volatility Indicators
         df = ta.add_volatility_ta(df, "High", "Low", "Close", fillna=True)
-        # Trend Indicators
         df = ta.add_trend_ta(df, "High", "Low", "Close", fillna=True)
-        # Momentum Indicators
         df = ta.add_momentum_ta(df, "High", "Low", "Close", "Volume", fillna=True)
     except Exception:
-        # This can happen with very short data series, it's safe to just return what we have
         pass
 
     # Manually calculate 52-week high/low distance
-    rolling_high_52w = df["Close"].rolling(window=252, min_periods=1).max()
-    rolling_low_52w = df["Close"].rolling(window=252, min_periods=1).min()
-    df["Dist_52w_High_Pct"] = (df["Close"] - rolling_high_52w) / rolling_high_52w
-    df["Dist_52w_Low_Pct"] = (df["Close"] - rolling_low_52w) / rolling_low_52w
+    try:
+        rolling_high_52w = df["Close"].rolling(window=252, min_periods=1).max()
+        rolling_low_52w = df["Close"].rolling(window=252, min_periods=1).min()
+        df["Dist_52w_High_Pct"] = (df["Close"] - rolling_high_52w) / rolling_high_52w
+        df["Dist_52w_Low_Pct"] = (df["Close"] - rolling_low_52w) / rolling_low_52w
+    except Exception:
+        # If this calculation fails for any reason, pass silently
+        # The defensive logic below will handle the missing columns
+        pass
 
     # If it's a market instrument, we only keep a subset of columns
     if is_market_instrument:
         market_cols_to_keep = [
-            "trend_sma_fast",
-            "trend_sma_slow",
-            "momentum_rsi",
-            "trend_macd",
-            "trend_macd_signal",
-            "trend_macd_diff",
-            "trend_adx",
-            "volatility_bbm",
-            "volatility_bbh",
-            "volatility_bbl",
+            "trend_sma_fast", "trend_sma_slow", "momentum_rsi", "trend_macd",
+            "trend_macd_signal", "trend_macd_diff", "trend_adx", "volatility_bbm",
+            "volatility_bbh", "volatility_bbl",
         ]
-        # Keep original OHLCV + Dist + the selected indicators
-        final_cols = list(stock_df.columns) + ["Dist_52w_High_Pct", "Dist_52w_Low_Pct"]
-        final_cols += [col for col in market_cols_to_keep if col in df.columns]
-        df = df[final_cols]
+        
+        final_cols = list(stock_df.columns)
+        
+        # 1. Add 'Dist' columns, checking if the column name is a string first
+        dist_cols = [
+            col for col in df.columns 
+            if isinstance(col, str) and col.startswith("Dist_")
+        ]
+        final_cols.extend(dist_cols)
+
+        # 2. Add 'ta' columns, also checking if the name is a string
+        ta_cols = [
+            col for col in market_cols_to_keep 
+            if isinstance(col, str) and col in df.columns
+        ]
+        final_cols.extend(ta_cols)
+        
+        # 3. Ensure no duplicate columns and filter the DataFrame
+        final_cols = list(dict.fromkeys(final_cols))
+        
+        # Ensure that all columns in final_cols actually exist in the dataframe before slicing
+        existing_final_cols = [col for col in final_cols if col in df.columns]
+        df = df[existing_final_cols]
 
     # Cast any new integer columns to float to prevent type warnings later
     for col in df.columns:
@@ -116,7 +98,7 @@ def _process_ticker_batch(
     warnings.filterwarnings("ignore")
 
     ticker, dates_to_process = work_item
-    stock_df_raw = find_and_load_ohlcv_data(db_path_str, ticker)
+    stock_df_raw = load_ohlcv_with_fallback(ticker, db_path_str)
     if stock_df_raw.empty:
         return []
 
@@ -154,12 +136,8 @@ def load_technical_indicators_df(
 ) -> pd.DataFrame:
     print("--- Pre-loading market instruments (SPX, VIXY) ---")
     market_data = {
-        "spx": calculate_indicators(
-            find_and_load_ohlcv_data(db_path_str, "^spx"), is_market_instrument=True
-        ),
-        "vixy": calculate_indicators(
-            find_and_load_ohlcv_data(db_path_str, "vixy.us"), is_market_instrument=True
-        ),
+        "spx": calculate_indicators(load_ohlcv_with_fallback("^spx", db_path_str), is_market_instrument=True),
+        "vixy": calculate_indicators(load_ohlcv_with_fallback("vixy", db_path_str), is_market_instrument=True),
     }
 
     work_items = list(input_df.groupby("Ticker")["Filing Date"].apply(list).items())

@@ -40,7 +40,7 @@ def _pre_filter_sec_columns(
     min_occurrences = int(len(all_rows) * presence_threshold)
 
     # Identify which keys to keep. Always keep the identifiers.
-    keys_to_keep = {"Ticker", "Filing Date"}
+    keys_to_keep = {"Ticker", "Filing Date", "CIK"}
     for key, count in key_counter.items():
         if count >= min_occurrences:
             keys_to_keep.add(key)
@@ -215,7 +215,7 @@ def load_sec_features_df(input_df, parquet_dir_str, request_header, n_prev=2):
                         valj = all_s.get(f"{tag}_q-{j}", np.nan)
                         all_s[f"{tag}_diff_q1{j}"] = val1 - valj
         all_s = add_engineered_features(all_s)
-        row_dict = {"Ticker": ticker, "Filing Date": fdate_str}
+        row_dict = {"Ticker": ticker, "Filing Date": fdate_str, "CIK": cik}
         row_dict.update(all_s.to_dict())
         all_rows.append(row_dict)
 

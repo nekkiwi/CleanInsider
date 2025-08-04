@@ -137,7 +137,7 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
     for _ in range(num_weeks):
         start_date = end_date - datetime.timedelta(days=7)
         date_ranges.append((start_date, end_date))
-        end_date = start_date - datetime.timedelta(days=1)
+        end_date = start_date - datetime.timedelta(days=30*3)
 
     # Step 2: Use joblib to fetch data in parallel
     print(f"Initiating parallel scrape for {num_weeks} weeks of data...")

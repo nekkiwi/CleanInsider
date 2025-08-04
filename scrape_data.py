@@ -20,34 +20,39 @@ def main(num_weeks: int):
     print("...Environment setup complete.\n")
 
     # 2. Run the full feature scraping pipeline
-    # run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
-    
     n_splits = 7
+
+    run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
     
-    # run_preprocess_pipeline(
-    #     config=config, 
-    #     n_splits=n_splits, 
-    #     corr_thresh=0.8, 
-    #     var_thresh=0.0001,
-    #     missing_thresh=0.6,
-    #     start_date="2010-01-01"  # <-- Define your earliest time point here
-    # )
+    run_preprocess_pipeline(
+        config=config, 
+        n_splits=n_splits, 
+        corr_thresh=0.8, 
+        var_thresh=0.0001,
+        missing_thresh=0.6,
+        start_date="2010-01-01"  # <-- Define your earliest time point here
+    )
     
     # --- Target Generation Pipeline (with multiple combinations) ---
     target_combinations = [
         {'time': '1w', 'tp': 0.05, 'sl': -0.05},
-        {'time': '1w', 'tp': 0.05, 'sl': -0.10},
-        {'time': '1w', 'tp': 0.10, 'sl': -0.10},
-        {'time': '1m', 'tp': 0.05, 'sl': -0.05},
-        {'time': '1m', 'tp': 0.05, 'sl': -0.10},
-        {'time': '1m', 'tp': 0.10, 'sl': -0.10},
-        {'time': '3m', 'tp': 0.05, 'sl': -0.10},
-        {'time': '3m', 'tp': 0.05, 'sl': -0.10},
-        {'time': '3m', 'tp': 0.10, 'sl': -0.10},
+        # {'time': '1w', 'tp': 0.05, 'sl': -0.10},
+        # {'time': '1w', 'tp': 0.10, 'sl': -0.10},
+        # {'time': '1m', 'tp': 0.05, 'sl': -0.05},
+        # {'time': '1m', 'tp': 0.05, 'sl': -0.10},
+        # {'time': '1m', 'tp': 0.10, 'sl': -0.10},
+        # {'time': '3m', 'tp': 0.05, 'sl': -0.10},
+        # {'time': '3m', 'tp': 0.05, 'sl': -0.10},
+        # {'time': '3m', 'tp': 0.10, 'sl': -0.10},
     ]
     
-    run_target_generation_pipeline(config, target_combinations, n_splits=n_splits)
-
+    run_target_generation_pipeline(
+            config=config, 
+            target_combinations=target_combinations, 
+            n_splits=n_splits,
+            batch_size=100,
+            debug=False
+        )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the full data scraping pipeline.")
