@@ -1,14 +1,18 @@
 # file: src/scrapers/data_loader.py
 
-import pandas as pd
-from pathlib import Path
-import yfinance as yf
 from functools import lru_cache
+from pathlib import Path
+
+import pandas as pd
+import yfinance as yf
+
 
 # Use an unbounded cache for the duration of the process.
 # This is safe as each worker process will have its own cache.
 @lru_cache(maxsize=None)
-def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date: pd.Timestamp = None) -> pd.DataFrame:
+def load_ohlcv_with_fallback(
+    ticker: str, db_path_str: str, required_start_date: pd.Timestamp = None
+) -> pd.DataFrame:
     """
     Attempts to load OHLCV data from the local Stooq database first.
     If the local data is insufficient or missing, it falls back to downloading
@@ -28,23 +32,23 @@ def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date:
             if file.stem.lower() == ticker_lower:
                 exact_match_file = file
                 break
-    
+
     if exact_match_file:
         try:
             df = pd.read_csv(exact_match_file)
-            df.columns = [col.strip('<>').capitalize() for col in df.columns]
-            df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d', errors='coerce')
-            df.set_index('Date', inplace=True)
-            required_cols = ['Open', 'High', 'Low', 'Close']
+            df.columns = [col.strip("<>").capitalize() for col in df.columns]
+            df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d", errors="coerce")
+            df.set_index("Date", inplace=True)
+            required_cols = ["Open", "High", "Low", "Close"]
             # Accommodate both 'Vol' and 'Volume'
-            if 'Vol' in df.columns:
-                df.rename(columns={'Vol': 'Volume'}, inplace=True)
-            required_cols.append('Volume')
+            if "Vol" in df.columns:
+                df.rename(columns={"Vol": "Volume"}, inplace=True)
+            required_cols.append("Volume")
 
             if all(col in df.columns for col in required_cols):
                 local_df = df[required_cols].sort_index().ffill().bfill()
         except Exception:
-            pass # Silently fail to fallback to yfinance
+            pass  # Silently fail to fallback to yfinance
 
     # 2. Decide if yfinance is needed based on data completeness
     use_yfinance = False
@@ -59,10 +63,16 @@ def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date:
         # print(" Fetching from yfinance...")
         try:
             # Explicitly request the full history needed from the required start date
-            data = yf.download(ticker, start=required_start_date, progress=False, timeout=10, auto_adjust=True)
+            data = yf.download(
+                ticker,
+                start=required_start_date,
+                progress=False,
+                timeout=10,
+                auto_adjust=True,
+            )
             if not data.empty:
                 # print(f" -> Successfully downloaded '{ticker}' from yfinance.")
-                required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                required_cols = ["Open", "High", "Low", "Close", "Volume"]
                 if all(col in data.columns for col in required_cols):
                     return data[required_cols].sort_index()
             else:
@@ -72,7 +82,6 @@ def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date:
             print(f" -> yfinance download failed for '{ticker}': {e}")
             # Fallback to whatever local data exists if yfinance fails
             return local_df
-    
+
     # 3. If local data was sufficient, return it
     return local_df
-
