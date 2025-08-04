@@ -29,7 +29,7 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     Main function to run the entire feature scraping and engineering pipeline.
     """
     start_time = time.time()
-    
+
     # --- Step 1: Scrape OpenInsider data ---
     print("--- Step 1: Scraping base insider data from OpenInsider ---")
     base_df = scrape_openinsider(num_weeks=num_weeks)
@@ -37,7 +37,7 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
         print("No base data scraped from OpenInsider. Halting pipeline.")
         return
     base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
-    
+
     # --- Step 2: Generate SEC financial features ---
     print("\n--- Step 2: Generating SEC financial features (in parallel) ---")
     sec_df = load_sec_features_df(
@@ -53,19 +53,23 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
         sec_df["Filing Date"] = pd.to_datetime(sec_df["Filing Date"])
         # Perform the merge
         merged_df = pd.merge(base_df, sec_df, on=["Ticker", "Filing Date"], how="left")
-        
+
         # --- NEW: Drop tickers that were not found in SEC data ---
         # We use 'CIK' as a reliable indicator that the SEC merge was successful.
         rows_before_drop = len(merged_df)
-        merged_df.dropna(subset=['CIK'], inplace=True)
+        merged_df.dropna(subset=["CIK"], inplace=True)
         rows_after_drop = len(merged_df)
-        
-        print(f"   -> Dropped {rows_before_drop - rows_after_drop} records that were not found in SEC data.")
+
+        print(
+            f"   -> Dropped {rows_before_drop - rows_after_drop} records that were not found in SEC data."
+        )
         if merged_df.empty:
             print("No records remain after filtering for SEC data. Halting.")
             return
     else:
-        print("   -> No SEC data was generated. The resulting feature set will not contain financial statement features.")
+        print(
+            "   -> No SEC data was generated. The resulting feature set will not contain financial statement features."
+        )
         merged_df = base_df
 
     # --- Step 3 & 4 (Now use the filtered DataFrame) ---
@@ -75,7 +79,9 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     )
     if not technical_df.empty:
         technical_df["Filing Date"] = pd.to_datetime(technical_df["Filing Date"])
-        merged_df = pd.merge(merged_df, technical_df, on=["Ticker", "Filing Date"], how="left")
+        merged_df = pd.merge(
+            merged_df, technical_df, on=["Ticker", "Filing Date"], how="left"
+        )
 
     print("\n--- Step 4: Generating macroeconomic features ---")
     dates_list = merged_df["Filing Date"].unique().tolist()
@@ -88,7 +94,8 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
         merged_df = pd.merge(merged_df, macro_df, on="Filing Date", how="left")
 
     cols_to_keep = [
-        col for col in merged_df.columns 
+        col
+        for col in merged_df.columns
         if isinstance(col, str) and not col.startswith("Unnamed")
     ]
     # Then, select only these valid columns
