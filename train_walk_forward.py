@@ -4,46 +4,36 @@ import time
 from src.training_pipeline import ModelTrainer
 
 def main():
-    """
-    Main entry point to configure and run the walk-forward training and
-    evaluation pipeline.
-    """
     print("--- Starting Walk-Forward Training Pipeline ---")
     start_time = time.time()
 
-    # --- Strategy & Model Configuration ---
-    
-    # Define the target strategies to model, as tuples of:
-    # (lookahead_period, take_profit_%, stop_loss_%)
     strategies = [
         ('1w', 0.05, -0.05),
-        # ('1m', 0.10, -0.10),
-        # ('3m', 0.15, -0.15),
+        # Add more if desired...
     ]
-    
-    # Define the thresholds (in percent) for converting continuous alpha targets
-    # into binary classification targets (e.g., alpha > 2% is a "buy" signal).
-    binary_thresholds_pct = [0, 2, 5] 
 
-    model_type = "LightGBM"  # Supported: "RandomForest", "LightGBM"
-    top_n_features = 50      # The number of features to select
-    seeds = [42, 123, 2024]  # Use multiple seeds for robust results
-    
-    # --- Pipeline Execution ---
-    # Initialize the trainer with the number of walk-forward folds (e.g., 6)
-    model_trainer = ModelTrainer(n_splits=6)
-    
-    model_trainer.run(
+    binary_thresholds_pct = [0, 2, 5]
+    model_type = "LightGBM"
+    top_n_features = 50
+    seeds = [42, 123, 2024]
+    num_folds = 6 # This defines how many walk-forward validation steps to run
+
+    trainer = ModelTrainer(num_folds=num_folds)
+
+    # --- THIS IS THE FIX ---
+    # The 'run' method knows where the test set is based on its internal paths.
+    # We do not need to pass a 'test_fold' argument here.
+    trainer.run(
         strategies=strategies,
         binary_thresholds_pct=binary_thresholds_pct,
         model_type=model_type,
         top_n=top_n_features,
         seeds=seeds
     )
-    
+    # --- END OF FIX ---
+
     end_time = time.time()
     print(f"\n--- Full Pipeline Complete in {end_time - start_time:.2f} seconds ---")
 
 if __name__ == "__main__":
     main()
-

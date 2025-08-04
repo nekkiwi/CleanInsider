@@ -134,7 +134,10 @@ def save_strategy_results(results_df: pd.DataFrame, stats_dir: str, model_name: 
         print("[INFO] No results to save.")
         return
     output_path = os.path.join(stats_dir, f"{model_name}_{category}_walk_forward_summary.xlsx")
-    group_cols = ['Timepoint', 'TP', 'SL', 'Binary Threshold', 'Fold', 'Model']
+    group_cols = ['Timepoint', 'TP', 'SL', 'Threshold']
+    # If it's the validation results, we also group by Fold
+    if 'Fold' in results_df.columns:
+        group_cols.append('Fold')
     display_cols = [col for col in results_df.columns if col not in group_cols and col != 'Seed']
     mean_df = results_df.groupby(group_cols)[display_cols].mean().reset_index()
     std_df = results_df.groupby(group_cols)[display_cols].std().reset_index()

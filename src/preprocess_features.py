@@ -1,114 +1,93 @@
 # file: src/preprocess_features.py
 
-import json
 import time
 from pathlib import Path
 import pandas as pd
-import numpy as np
-
 from preprocess.time_based_splitter import create_time_based_splits
-from preprocess.fold_processor import process_fold_data
+# --- THIS IS THE FIX ---
+# Use a relative import (.) to tell Python to look in the current directory's
+# 'preprocess' subfolder.
+from .preprocess.fold_processor import FoldProcessor 
+# --- END OF FIX ---
 from preprocess.utils import save_columns_list
 
 def run_preprocess_pipeline(config, n_splits=7, corr_thresh=0.8, var_thresh=0.0001, missing_thresh=0.6, start_date: str = None):
     """
     Main orchestrator for the walk-forward preprocessing pipeline.
+    This robust version uses a stateful FoldProcessor to ensure consistency
+    between training and evaluation sets, preventing KeyErrors.
     """
     print("--- Starting Walk-Forward Preprocessing Pipeline ---")
     start_time = time.time()
-    
+
+    # --- 1. Initial Setup and Global Filtering ---
     features_dir = Path(config.FEATURES_OUTPUT_PATH)
     info_dir = Path(config.FEATURES_INFO_OUTPUT_PATH)
     input_path = features_dir / "raw_features.parquet"
-    
     info_dir.mkdir(parents=True, exist_ok=True)
-    
+
     df = pd.read_parquet(input_path)
-    print(f"Loaded {len(df)} rows with {df.shape[1]} features from {input_path}.")
+    print(f"Loaded {len(df)} rows with {df.shape[1]} features.")
 
     if start_date:
-        print(f"\n--- Applying Start Date Filter: Keeping data on or after {start_date} ---")
-        original_rows = len(df)
         df['Filing Date'] = pd.to_datetime(df['Filing Date'])
         df = df[df['Filing Date'] >= pd.to_datetime(start_date)].copy()
-        print(f"✅ Filtered data from {original_rows} to {len(df)} rows.")
-        if len(df) == 0:
-            raise ValueError("No data remains after applying the start date filter.")
+        print(f"Filtered data to {len(df)} rows after start date.")
 
-    print(f"\n--- Applying Global Missingness Filter (> {missing_thresh*100}% missing) ---")
-    PROTECTED_FEATURES = {
-        'Ticker', 'Filing Date', 'Price', 'CommonStockSharesOutstanding_q-1', 'Value', 'Qty', 
-        'Pres_Buy_Value', 'CFO_Buy_Value', 'Assets_q-1', 'Liabilities_q-1', 'StockholdersEquity_q-1',
-        'NetIncomeLoss_q-2', 'StockholdersEquity_q-2', 'CashAndCashEquivalentsAtCarryingValue_q-1',
-        'NetCashProvidedByUsedInFinancingActivities_q-1', 'NetCashProvidedByUsedInInvestingActivities_q-1',
-        'Market_SPX_Volume', 'Market_VIXY_Volume'
-    }
+    # Apply global missingness filter
     missing_proportions = df.isnull().sum() / len(df)
-    cols_to_drop_missing = set(missing_proportions[missing_proportions > missing_thresh].index)
-    cols_to_drop_missing = [col for col in cols_to_drop_missing if col not in PROTECTED_FEATURES]
-    df.drop(columns=cols_to_drop_missing, inplace=True, errors="ignore")
-    print(f"✅ Dropped {len(cols_to_drop_missing)} features. {df.shape[1]} features remain.")
+    # Define protected features that should not be dropped
+    PROTECTED_FEATURES = {
+        'Ticker', 'Filing Date', 'Price', 'Value', 'Qty' 
+    }
+    cols_to_drop_missing = missing_proportions[missing_proportions > missing_thresh].index
+    cols_to_drop_final = [col for col in cols_to_drop_missing if col not in PROTECTED_FEATURES]
+    df.drop(columns=cols_to_drop_final, inplace=True, errors="ignore")
+    print(f"Dropped {len(cols_to_drop_final)} features with >{missing_thresh*100}% missing values.")
+
+    # --- 2. Create Time-Based Splits ---
+    df_split, _ = create_time_based_splits(df, n_splits=n_splits)
+
+    # --- 3. Walk-Forward Preprocessing and Saving (Single Pass) ---
+    print("\n--- Processing folds to create Training and Evaluation sets ---")
     
-    save_columns_list(df, info_dir / "global_missingness_pruned_features.txt")
-
-    df_split, ticker_date_map = create_time_based_splits(df, n_splits=n_splits)
-    with open(info_dir / "time_split_ticker_map.json", "w") as f:
-        json.dump(ticker_date_map, f, indent=4)
-    print(f"✅ Ticker-FilingDate split map saved.")
-
-    print("\n--- PASS 1: Initial processing of each fold (internal pruning) ---")
-    fold_column_sets = []
+    # We create n_splits-1 folds for walk-forward validation
     for i in range(1, n_splits):
-        print(f"\n--- Processing Fold {i} (Splits 1-{i}) ---")
-        fold_data = df_split[df_split['split_id'] <= i].copy()
-        fold_preprocessed_df, fold_outlier_bounds = process_fold_data(
-            fold_data, corr_threshold=corr_thresh, variance_threshold=var_thresh
-        )
+        print(f"\n--- Generating data for Fold {i} ---")
+
+        # Define the raw data for this fold's training and evaluation sets
+        train_df_raw = df_split[df_split['split_id'] <= i].copy()
+        eval_df_raw = df_split[df_split['split_id'] == i + 1].copy()
+        
+        print(f"  Training on {len(train_df_raw)} rows (Splits 1-{i}).")
+        print(f"  Evaluating on {len(eval_df_raw)} rows (Split {i+1}).")
+
+        # Initialize and fit the processor ONLY on the training data
+        processor = FoldProcessor(corr_threshold=corr_thresh, variance_threshold=var_thresh)
+        processor.fit(train_df_raw)
+
+        # Transform both datasets using the SAME learned parameters
+        train_df_processed = processor.transform(train_df_raw)
+        eval_df_processed = processor.transform(eval_df_raw)
+        
+        # --- 4. Save the Final Datasets ---
+        fold_output_dir = features_dir / f"fold_{i}"
+        fold_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        train_save_path = fold_output_dir / "training_data.parquet"
+        eval_save_path = fold_output_dir / "evaluation_data.parquet"
+        
+        train_df_processed.to_parquet(train_save_path, index=False)
+        eval_df_processed.to_parquet(eval_save_path, index=False)
+        
+        print(f"✅ Fold {i} data saved:")
+        print(f"   - Training set ({train_df_processed.shape[0]}x{train_df_processed.shape[1]}): {train_save_path}")
+        print(f"   - Evaluation set ({eval_df_processed.shape[0]}x{eval_df_processed.shape[1]}): {eval_save_path}")
+        
+        # Save info for this fold
         fold_info_dir = info_dir / f"fold_{i}"
         fold_info_dir.mkdir(parents=True, exist_ok=True)
-        
-        temp_output_path = features_dir / f"temp_preprocessed_fold_{i}.parquet"
-        fold_preprocessed_df.to_parquet(temp_output_path, index=False)
-        
-        with open(fold_info_dir / "outlier_clip_bounds.json", "w") as f:
-            json.dump(fold_outlier_bounds, f, indent=4)
-        
-        fold_column_sets.append(set(fold_preprocessed_df.columns))
-        print(f"✅ Fold {i} initial processing complete.")
+        save_columns_list(train_df_processed, fold_info_dir / "final_columns.txt")
 
-    common_features = sorted(list(set.intersection(*fold_column_sets)))
-    common_features_path = info_dir / "common_features_across_folds.txt"
-    save_columns_list(pd.DataFrame(columns=common_features), common_features_path)
-    print(f"\n--- Found {len(common_features)} common features across all folds. ---")
-
-    print("\n--- PASS 2: Filtering folds to common feature set and finalizing ---")
-    for i in range(1, n_splits):
-        # Path for info files (.json, .txt) - remains in the info directory
-        fold_info_dir = info_dir / f"fold_{i}"
-        
-        # --- NEW: Path for the preprocessed .parquet file ---
-        fold_features_dir = features_dir / f"fold_{i}"
-        fold_features_dir.mkdir(parents=True, exist_ok=True)
-
-        temp_output_path = features_dir / f"temp_preprocessed_fold_{i}.parquet"
-        df_fold = pd.read_parquet(temp_output_path)
-        df_filtered = df_fold[common_features]
-        
-        # --- CHANGED: Save final parquet to the new features/fold_i directory ---
-        final_output_path = fold_features_dir / "preprocessed_fold.parquet"
-        df_filtered.to_parquet(final_output_path, index=False)
-        
-        # Save the final column list to the info/fold_i directory (this path is unchanged)
-        cols_path = fold_info_dir / "preprocessed_columns.txt"
-        save_columns_list(df_filtered, cols_path)
-        
-        temp_output_path.unlink()
-        print(f"✅ Final data for Fold {i} saved to {final_output_path}")
-
-    test_set = df_split[df_split['split_id'] == n_splits].copy()
-    test_set_path = features_dir / "final_test_set_unprocessed.parquet"
-    test_set.to_parquet(test_set_path, index=False)
-    print(f"\n✅ Final test set saved to {test_set_path}")
-    
     end_time = time.time()
-    print(f"\n--- Walk-Forward Preprocessing Complete in {end_time - start_time:.2f} seconds ---")
+    print(f"\n--- Preprocessing Complete in {end_time - start_time:.2f} seconds ---")
