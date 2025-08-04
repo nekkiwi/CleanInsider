@@ -22,16 +22,16 @@ def main(num_weeks: int):
     # 2. Run the full feature scraping pipeline
     n_splits = 7
 
-    run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
+    # run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
     
-    run_preprocess_pipeline(
-        config=config, 
-        n_splits=n_splits, 
-        corr_thresh=0.8, 
-        var_thresh=0.0001,
-        missing_thresh=0.6,
-        start_date="2010-01-01"  # <-- Define your earliest time point here
-    )
+    # run_preprocess_pipeline(
+    #     config=config, 
+    #     n_splits=n_splits, 
+    #     corr_thresh=0.8, 
+    #     var_thresh=0.0001,
+    #     missing_thresh=0.6,
+    #     start_date="2010-01-01"  # <-- Define your earliest time point here
+    # )
     
     # --- Target Generation Pipeline (with multiple combinations) ---
     target_combinations = [
@@ -51,7 +51,7 @@ def main(num_weeks: int):
             target_combinations=target_combinations, 
             n_splits=n_splits,
             batch_size=100,
-            debug=False
+            debug=True
         )
 
 if __name__ == "__main__":
