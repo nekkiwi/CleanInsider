@@ -5,14 +5,18 @@ from pathlib import Path
 from tqdm import tqdm
 import yfinance as yf
 import warnings
+from joblib import Parallel, delayed
+
 from src.scrapers.data_loader import load_ohlcv_with_fallback
 from .generate_targets import calculate_realized_alpha_series
+
 
 SPX_TICKER_LOCAL = '^spx'
 SPX_TICKER_YFINANCE = '^GSPC'
 
+
 def get_and_update_spx_data(config, min_required_date: pd.Timestamp):
-    # This function is unchanged and remains correct
+    # This function remains correct and is unchanged.
     print("\n--- Pre-loading and Verifying SPX Market Data ---")
     local_spx_path = Path(config.STOOQ_DATABASE_PATH) / f"{SPX_TICKER_LOCAL}.parquet"
     try:
@@ -69,6 +73,19 @@ def get_and_update_spx_data(config, min_required_date: pd.Timestamp):
                 return spx_local
     return spx_local
 
+
+# --- THIS IS THE NEW WORKER FUNCTION FOR PARALLEL DATA LOADING ---
+def _load_ohlcv_for_ticker(ticker, required_start_date, db_path_str):
+    """Worker function to load OHLCV data for a single ticker."""
+    df = load_ohlcv_with_fallback(
+        ticker, 
+        db_path_str, 
+        required_start_date=required_start_date
+    )
+    # Return the ticker along with the data for easy reconstruction
+    return ticker, df
+
+
 def calculate_master_targets(config, target_combinations: list, batch_size: int = 100, debug: bool = False):
     print("\n--- STEP 2: Calculating Master Targets in Batches ---")
     targets_dir = Path(config.TARGETS_OUTPUT_PATH)
@@ -76,17 +93,22 @@ def calculate_master_targets(config, target_combinations: list, batch_size: int 
     output_path = targets_dir / "master_targets.parquet"
     if not event_list_path.exists():
         raise FileNotFoundError(f"Master event list not found at {event_list_path}.")
+    
     base_df = pd.read_parquet(event_list_path)
     base_df['Filing Date'] = pd.to_datetime(base_df['Filing Date']).dt.tz_localize(None)
     all_tickers = base_df['Ticker'].unique()
+    
     if base_df.empty:
         raise ValueError("Master event list is empty.")
+    
     min_date_needed = base_df['Filing Date'].min() - pd.Timedelta(days=90)
     spx_data = get_and_update_spx_data(config, min_date_needed)
+    
     if spx_data.empty:
         raise RuntimeError("FATAL: Could not load SPX data from any source.")
     if spx_data.index.min() > min_date_needed:
         raise RuntimeError(f"FATAL: Final SPX data does not cover the required historical range.")
+        
     print(f"--- ✅ SPX data ready (Range: {spx_data.index.min().date()} to {spx_data.index.max().date()}) ---\n")
 
     all_results = []
@@ -94,31 +116,38 @@ def calculate_master_targets(config, target_combinations: list, batch_size: int 
         ticker_batch = all_tickers[i:i + batch_size]
         batch_df = base_df[base_df['Ticker'].isin(ticker_batch)].copy()
         
-        # --- REVISED OHLCV DATA LOADING LOGIC ---
-        ohlcv_data = {}
-        ticker_groups_in_batch = batch_df.groupby('Ticker')
-        for ticker, events_for_ticker in tqdm(ticker_groups_in_batch, desc="Loading price data for batch", leave=False):
+        # --- PARALLEL OHLCV DATA LOADING LOGIC ---
+        # 1. Prepare the tasks for all tickers in the current batch
+        tasks = []
+        for ticker, events_for_ticker in batch_df.groupby('Ticker'):
             min_filing_date_for_ticker = events_for_ticker['Filing Date'].min()
             required_start_date = min_filing_date_for_ticker - pd.Timedelta(days=90)
-            df = load_ohlcv_with_fallback(
-                ticker, 
-                config.STOOQ_DATABASE_PATH, 
-                required_start_date=required_start_date
+            tasks.append(
+                delayed(_load_ohlcv_for_ticker)(ticker, required_start_date, config.STOOQ_DATABASE_PATH)
             )
-            if not df.empty:
-                ohlcv_data[ticker] = df
-        # --- END OF REVISED LOGIC ---
+
+        # 2. Execute the data loading in parallel for the batch
+        parallel_ohlcv_results = Parallel(n_jobs=-2)(
+            tqdm(tasks, desc="Loading price data for batch", leave=False, total=len(tasks))
+        )
+        
+        # 3. Reconstruct the ohlcv_data dictionary from the parallel results
+        ohlcv_data = {ticker: df for ticker, df in parallel_ohlcv_results if df is not None and not df.empty}
+        # --- END OF PARALLEL LOGIC ---
 
         batch_results_df = batch_df[['Ticker', 'Filing Date']].copy()
         for params in target_combinations:
             timepoint, tp, sl = params['time'], params['tp'], params['sl']
             col_name = f"alpha_{timepoint}_tp{str(tp).replace('.', 'p')}_sl{str(sl).replace('.', 'p')}"
+            
+            # This function is already parallel internally, so we call it as before
             alpha_series, debug_log = calculate_realized_alpha_series(
                 base_df=batch_df, ohlcv_data=ohlcv_data, spx_data=spx_data,
                 timepoint_str=timepoint, take_profit=tp, stop_loss=sl,
                 debug=debug
             )
             batch_results_df[col_name] = alpha_series
+            
             if debug and debug_log:
                 print(f"\n--- Debug Log for {col_name} (Batch {i//batch_size + 1}) ---")
                 for msg in debug_log: print(msg)

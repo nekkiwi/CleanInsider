@@ -178,6 +178,43 @@ def load_macro_feature_df(dates_list: list, stooq_db_dir: str) -> pd.DataFrame:
     print("--- ✅ Optimized Lookup Phase Complete ---")
     return final_df[cols]
 
+def generate_macro_features(base_df: pd.DataFrame, stooq_db_dir: str, output_path: str, missing_thresh: float = 0.8):
+    """
+    Loads all macro data and looks up the relevant values for each filing date.
+    """
+    print("\n--- Generating Macroeconomic Features ---")
+    dates_list = base_df["Filing Date"].unique().tolist()
+    
+    stooq_macro_path = Path(stooq_db_dir) / "macro" / "us"
+    master_macro_df = load_all_macro_data(stooq_macro_path)
+
+    if master_macro_df.empty:
+        print("❌ CRITICAL: No macro data loaded. Skipping this feature set.")
+        # Create an empty file to signify the step was run
+        pd.DataFrame().to_parquet(output_path, index=False)
+        return
+
+    # Optimized lookup logic...
+    query_dates_series = pd.to_datetime(pd.Series(dates_list, name="Filing Date"))
+    # Use data from the end of the previous month to avoid lookahead bias
+    target_dates_series = (query_dates_series.dt.to_period("M") - 1).dt.to_timestamp("M")
+    unique_target_dates = target_dates_series.unique()
+    
+    results_cache = {date: master_macro_df.asof(date) for date in unique_target_dates}
+    
+    macro_data_rows = [results_cache[d] for d in target_dates_series]
+    final_df = pd.DataFrame(macro_data_rows, index=query_dates_series)
+    final_df.reset_index(inplace=True)
+    
+    print(f"  > Original component shape: {final_df.shape}")
+    missing_proportions = final_df.isnull().sum() / len(final_df)
+    cols_to_drop = missing_proportions[missing_proportions >= missing_thresh].index
+    final_df.drop(columns=cols_to_drop, inplace=True, errors="ignore")
+    print(f"  > Dropped {len(cols_to_drop)} columns with >= {missing_thresh:.0%} missing values.")
+    print(f"  > Final component shape: {final_df.shape}")
+
+    final_df.to_parquet(output_path, index=False)
+    print(f"✅ Saved macro features to {output_path}")
 
 if __name__ == "__main__":
     STOOQ_DB_DIR = "../../data/stooq_database"

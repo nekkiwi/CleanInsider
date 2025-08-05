@@ -102,6 +102,7 @@ dmypy.json
 
 # Data files - IMPORTANT to prevent committing large data files
 /data/
+/results/
 /sec_filings/
 *.xlsx
 *.csv

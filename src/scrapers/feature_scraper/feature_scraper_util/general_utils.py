@@ -53,7 +53,7 @@ def report_missing_data(df: pd.DataFrame, output_dir: Path = None):
     if output_dir:
         # Ensure the directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
-        report_path = output_dir / "info" / "missing_data_report.txt"
+        report_path = output_dir / "missing_data_report.txt"
         try:
             with open(report_path, "w") as f:
                 f.write(report_string)

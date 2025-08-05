@@ -9,20 +9,20 @@ def main():
 
     strategies = [
         ('1w', 0.05, -0.05),
-        # Add more if desired...
+        ('2w', 0.07, -0.07),
+        ('1m', 0.10, -0.10),
     ]
 
     binary_thresholds_pct = [0, 2, 5]
     model_type = "LightGBM"
-    top_n_features = 50
+    top_n_features = 75
     seeds = [42, 123, 2024]
-    num_folds = 6 # This defines how many walk-forward validation steps to run
+    
+    # This now correctly controls the number of walk-forward validation folds.
+    # The final test set is handled automatically.
+    num_folds = 6 
 
     trainer = ModelTrainer(num_folds=num_folds)
-
-    # --- THIS IS THE FIX ---
-    # The 'run' method knows where the test set is based on its internal paths.
-    # We do not need to pass a 'test_fold' argument here.
     trainer.run(
         strategies=strategies,
         binary_thresholds_pct=binary_thresholds_pct,
@@ -30,7 +30,6 @@ def main():
         top_n=top_n_features,
         seeds=seeds
     )
-    # --- END OF FIX ---
 
     end_time = time.time()
     print(f"\n--- Full Pipeline Complete in {end_time - start_time:.2f} seconds ---")
