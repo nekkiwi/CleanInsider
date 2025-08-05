@@ -1,7 +1,9 @@
 # file: src/preprocess/utils.py
 
 from pathlib import Path
+
 import pandas as pd
+
 
 def save_columns_list(df: pd.DataFrame, output_path: Path):
     """Saves the list of columns from a DataFrame to a text file."""
