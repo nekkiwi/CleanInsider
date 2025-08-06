@@ -20,7 +20,7 @@ def main(num_weeks: int):
     print("...Environment setup complete.\n")
 
     # 2. Run the full feature scraping pipeline
-    n_splits = 7
+    num_folds = 5
     run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
 
     # 3. Run the preprocessing pipeline
@@ -28,7 +28,7 @@ def main(num_weeks: int):
     # by the new version of the preprocessing script.
     run_preprocess_pipeline(
         config=config,
-        num_folds=5, # This will generate 5 validation folds and 1 test set
+        num_folds=num_folds, # This will generate 5 validation folds and 1 test set
         corr_thresh=0.8,
         var_thresh=0.0001,
         missing_thresh=0.6
@@ -37,16 +37,23 @@ def main(num_weeks: int):
     # --- Target Generation Pipeline (can be run after preprocessing) ---
     target_combinations = [
         {'time': '1w', 'tp': 0.05, 'sl': -0.05},
-        # Add other combinations as needed
+        {'time': '1w', 'tp': 0.05, 'sl': -0.10},
+        {'time': '1w', 'tp': 0.10, 'sl': -0.10},
+        {'time': '2w', 'tp': 0.05, 'sl': -0.05},
+        {'time': '2w', 'tp': 0.05, 'sl': -0.10},
+        {'time': '2w', 'tp': 0.10, 'sl': -0.10},
+        {'time': '1m', 'tp': 0.05, 'sl': -0.05},
+        {'time': '1m', 'tp': 0.05, 'sl': -0.10},
+        {'time': '1m', 'tp': 0.10, 'sl': -0.10},
     ]
 
     # Uncomment the following lines to run target generation
     run_target_generation_pipeline(
         config=config,
         target_combinations=target_combinations,
-        n_splits=n_splits,
-        batch_size=100,
-        debug=True
+        n_splits=num_folds+2,
+        batch_size=250,
+        debug=False
     )
 
 if __name__ == "__main__":

@@ -10,32 +10,32 @@ def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """
     Calculates a curated set of technical indicators with extensive debugging.
     """
-    print(f"\n[CALC-INFO {ticker}] Entering calculate_indicators function.")
+    # print(f"\n[CALC-INFO {ticker}] Entering calculate_indicators function.")
     warnings.filterwarnings("ignore", category=FutureWarning, module="ta.*")
     
     if stock_df.empty or len(stock_df) < 50:
-        print(f"[CALC-WARN {ticker}] DataFrame is empty or too short (len: {len(stock_df)}). Aborting calculation.")
+        # print(f"[CALC-WARN {ticker}] DataFrame is empty or too short (len: {len(stock_df)}). Aborting calculation.")
         return pd.DataFrame() 
 
-    print(f"[CALC-DEBUG {ticker}] Initial raw data received. Shape: {stock_df.shape}. Columns: {stock_df.columns.to_list()}")
+    # print(f"[CALC-DEBUG {ticker}] Initial raw data received. Shape: {stock_df.shape}. Columns: {stock_df.columns.to_list()}")
 
     df = stock_df.copy()
     required_cols = ["Open", "High", "Low", "Close", "Volume"]
 
     # --- Data Cleaning and Validation ---
-    print(f"[CALC-DEBUG {ticker}] Starting data cleaning and validation.")
+    # print(f"[CALC-DEBUG {ticker}] Starting data cleaning and validation.")
     try:
         # Check which required columns we actually have
         available_cols = [col for col in required_cols if col in df.columns]
         missing_cols = [col for col in required_cols if col not in df.columns]
         
         if missing_cols:
-            print(f"[CALC-WARN {ticker}] Missing columns: {missing_cols}")
+            # print(f"[CALC-WARN {ticker}] Missing columns: {missing_cols}")
             # If Volume is missing, create it with zeros
             if 'Volume' in missing_cols and len(missing_cols) == 1:
                 df['Volume'] = 0
                 available_cols.append('Volume')
-                print(f"[CALC-INFO {ticker}] Created Volume column with zeros")
+                # print(f"[CALC-INFO {ticker}] Created Volume column with zeros")
             else:
                 print(f"[CALC-ERROR {ticker}] Too many missing required columns: {missing_cols}")
                 return pd.DataFrame()
@@ -45,7 +45,7 @@ def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        print(f"[CALC-DEBUG {ticker}] Successfully converted OHLCV columns to numeric.")
+        # print(f"[CALC-DEBUG {ticker}] Successfully converted OHLCV columns to numeric.")
     except Exception as e:
         print(f"\n\n--- [CRITICAL ERROR in calculate_indicators for {ticker}] ---")
         print(f"Error during numeric conversion: {e}")
@@ -60,12 +60,12 @@ def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     
     # Use pandas fillna method instead of deprecated method parameter
-    df = df.fillna(method='ffill').fillna(method='bfill')
+    df = df.ffill().bfill()
     
     # Only drop rows where Close is NaN (most critical column)
     df = df.dropna(subset=['Close'])
     
-    print(f"[CALC-DEBUG {ticker}] Data after cleaning. Shape: {df.shape}")
+    # print(f"[CALC-DEBUG {ticker}] Data after cleaning. Shape: {df.shape}")
 
     if df.empty or len(df) < 20:
         print(f"[CALC-WARN {ticker}] DataFrame is empty or too short after cleaning (len: {len(df)}). Aborting calculation.")
@@ -73,7 +73,7 @@ def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
     # --- TA Library Calculations ---
     try:
-        print(f"[CALC-DEBUG {ticker}] Applying 'ta' library functions...")
+        # print(f"[CALC-DEBUG {ticker}] Applying 'ta' library functions...")
         
         # Add each category separately with better error handling
         try:
@@ -96,16 +96,16 @@ def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         except Exception as e:
             print(f"[CALC-WARN {ticker}] Momentum TA calculation failed: {e}")
         
-        print(f"[CALC-DEBUG {ticker}] 'ta' functions applied. Shape is now: {df.shape}")
+        # print(f"[CALC-DEBUG {ticker}] 'ta' functions applied. Shape is now: {df.shape}")
         
     except Exception as e:
         print(f"  [CALC-ERROR {ticker}] TA calculation failed: {e}")
         # Don't return empty, use original data if TA fails
-        print(f"  [CALC-WARN {ticker}] Continuing with original OHLCV data only")
+        # print(f"  [CALC-WARN {ticker}] Continuing with original OHLCV data only")
 
     # --- Manual Indicator Calculations ---
     try:
-        print(f"[CALC-DEBUG {ticker}] Calculating 52-week high/low distance...")
+        # print(f"[CALC-DEBUG {ticker}] Calculating 52-week high/low distance...")
         
         # Ensure we have enough data for 52-week calculations
         min_periods = min(50, len(df) // 2)
@@ -122,12 +122,12 @@ def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
                                          (df["Close"] - rolling_low_52w) / rolling_low_52w, 
                                          0)
         
-        print(f"[CALC-DEBUG {ticker}] 52-week calculations completed")
+        # print(f"[CALC-DEBUG {ticker}] 52-week calculations completed")
         
     except Exception as e:
         print(f"  [CALC-WARN {ticker}] Manual 52-week calculation failed: {e}")
 
-    print(f"[CALC-SUCCESS {ticker}] Finished indicator calculation. Final shape: {df.shape}")
+    # print(f"[CALC-SUCCESS {ticker}] Finished indicator calculation. Final shape: {df.shape}")
     return df
 
 def _process_ticker_for_technicals(work_item: tuple, db_path_str: str) -> list[dict] | None:
@@ -136,7 +136,7 @@ def _process_ticker_for_technicals(work_item: tuple, db_path_str: str) -> list[d
     
     min_date = pd.to_datetime(min(filing_dates)) - pd.Timedelta(days=365*2)
     
-    print(f"\n[WORKER-INFO {ticker}] Starting processing for {len(filing_dates)} filing dates. Need history from {min_date.date()}.")
+    # print(f"\n[WORKER-INFO {ticker}] Starting processing for {len(filing_dates)} filing dates. Need history from {min_date.date()}.")
     stock_df_raw = load_ohlcv_with_fallback(ticker, db_path_str, required_start_date=min_date)
     
     if stock_df_raw.empty: 
@@ -149,7 +149,7 @@ def _process_ticker_for_technicals(work_item: tuple, db_path_str: str) -> list[d
         return None
 
     ticker_rows = []
-    print(f"[WORKER-INFO {ticker}] Looking up technical features for each filing date...")
+    # print(f"[WORKER-INFO {ticker}] Looking up technical features for each filing date...")
     
     for date_str in filing_dates:
         target_date = pd.to_datetime(date_str)
@@ -173,7 +173,7 @@ def _process_ticker_for_technicals(work_item: tuple, db_path_str: str) -> list[d
                 result_dict["Ticker"] = ticker
                 result_dict["Filing Date"] = date_str  # Standardize to Filing_Date in output
                 ticker_rows.append(result_dict)
-                print(f"  [WORKER-DEBUG {ticker}] Found features for {target_date.date()}")
+                # print(f"  [WORKER-DEBUG {ticker}] Found features for {target_date.date()}")
             else:
                 print(f"  [WORKER-WARN {ticker}] Unexpected data type for features: {type(features)}")
                 
@@ -181,105 +181,86 @@ def _process_ticker_for_technicals(work_item: tuple, db_path_str: str) -> list[d
             print(f"  [WORKER-ERROR {ticker}] Error processing date {target_date.date()}: {e}")
             continue
             
-    print(f"[WORKER-SUCCESS {ticker}] Successfully processed {len(ticker_rows)} of {len(filing_dates)} events.")
+    # print(f"[WORKER-SUCCESS {ticker}] Successfully processed {len(ticker_rows)} of {len(filing_dates)} events.")
     return ticker_rows if ticker_rows else None
 
 
 def generate_technical_indicators(base_df: pd.DataFrame, db_path_str: str, output_path: str, missing_thresh: float = 0.8):
-    """Orchestrates the parallel calculation of technical indicators with verbose logging."""
+    """Orchestrates technical indicator calculation with comprehensive logging."""
     print("\n--- Generating Technical Indicator Features ---")
+    print(f"[TECH-INFO] Input base_df shape: {base_df.shape}")
+    print(f"[TECH-INFO] Available columns: {base_df.columns.tolist()}")
     
     if base_df.empty:
         print("❌ Base DataFrame is empty. Cannot generate technical indicators.")
         pd.DataFrame().to_parquet(output_path, index=False)
         return
     
-    # Debug: Print available columns
-    print(f"Available columns in base_df: {base_df.columns.tolist()}")
+    # Find correct column names
+    ticker_col = next((col for col in base_df.columns if col.lower() in ['ticker', 'symbol']), None)
+    date_col = next((col for col in base_df.columns if 'filing' in col.lower() or 'date' in col.lower()), None)
     
-    # Find the correct column names for Ticker and Filing Date
-    ticker_col = None
-    date_col = None
-    
-    # Look for ticker column (case insensitive)
-    for col in base_df.columns:
-        if col.lower() in ['ticker', 'symbol', 'stock', 'company']:
-            ticker_col = col
-            break
-    
-    # Look for date column (case insensitive)
-    for col in base_df.columns:
-        if any(term in col.lower() for term in ['filing', 'date', 'report']):
-            date_col = col
-            break
-    
-    if ticker_col is None:
-        print("❌ Could not find ticker column. Looking for columns containing: ticker, symbol, stock, company")
-        print(f"Available columns: {base_df.columns.tolist()}")
-        pd.DataFrame().to_parquet(output_path, index=False)
-        return
-        
-    if date_col is None:
-        print("❌ Could not find date column. Looking for columns containing: filing, date, report")
-        print(f"Available columns: {base_df.columns.tolist()}")
+    if not ticker_col or not date_col:
+        print(f"❌ Could not find required columns. Ticker: {ticker_col}, Date: {date_col}")
         pd.DataFrame().to_parquet(output_path, index=False)
         return
     
-    print(f"Using ticker column: '{ticker_col}' and date column: '{date_col}'")
+    print(f"[TECH-INFO] Using ticker column: '{ticker_col}' and date column: '{date_col}'")
     
-    # Create work items using the correct column names
-    try:
-        work_items = list(base_df.groupby(ticker_col)[date_col].apply(list).items())
-    except Exception as e:
-        print(f"❌ Error creating work items: {e}")
-        print(f"DataFrame shape: {base_df.shape}")
-        print(f"DataFrame columns: {base_df.columns.tolist()}")
-        print(f"First few rows:\n{base_df.head()}")
-        pd.DataFrame().to_parquet(output_path, index=False)
-        return
+    # Create work items
+    work_items = list(base_df.groupby(ticker_col)[date_col].apply(list).items())
+    print(f"[TECH-INFO] Created {len(work_items)} work items for {base_df[ticker_col].nunique()} unique tickers")
     
-    print(f"Created {len(work_items)} work items for parallel processing.")
-    
-    # Use fewer parallel jobs to reduce resource contention
+    # Process in parallel
     n_jobs = max(1, min(4, len(work_items)))
     tasks = [delayed(_process_ticker_for_technicals)(item, db_path_str) for item in work_items]
     results = Parallel(n_jobs=n_jobs)(tqdm(tasks, desc="Calculating Technicals"))
     
-    # Filter out None results and flatten
+    # Combine results
     all_rows = []
     successful_tickers = 0
+    failed_tickers = 0
     
-    for ticker_rows in results:
+    for i, ticker_rows in enumerate(results):
         if ticker_rows:
             all_rows.extend(ticker_rows)
             successful_tickers += 1
+        else:
+            failed_tickers += 1
     
-    print(f"\n[GENERATOR-INFO] Successfully processed {successful_tickers} out of {len(work_items)} tickers.")
+    print(f"\n[TECH-INFO] Processing complete:")
+    print(f"  - Successful tickers: {successful_tickers}")
+    print(f"  - Failed tickers: {failed_tickers}")
+    print(f"  - Total feature rows generated: {len(all_rows)}")
     
     if not all_rows:
-        print("\n❌ No technical indicators could be generated. Halting.")
+        print("\n❌ No technical indicators could be generated.")
         pd.DataFrame().to_parquet(output_path, index=False)
         return
-        
+    
     final_df = pd.DataFrame(all_rows)
-    print(f"\n[GENERATOR-INFO] Combined all ticker results. Shape of full DataFrame: {final_df.shape}")
+    print(f"[TECH-INFO] Combined dataframe shape: {final_df.shape}")
+    print(f"[TECH-DEBUG] Sample columns: {final_df.columns[:10].tolist()}...")
     
-    # Remove OHLCV columns as they're not needed in the final output
-    columns_to_remove = ["Open", "High", "Low", "Close", "Volume"]
-    final_df.drop(columns=columns_to_remove, inplace=True, errors="ignore")
+    # Remove OHLCV columns
+    ohlcv_cols = ["Open", "High", "Low", "Close", "Volume"]
+    before_removal = final_df.shape[1]
+    final_df.drop(columns=ohlcv_cols, inplace=True, errors="ignore")
+    removed_cols = before_removal - final_df.shape[1]
+    print(f"[TECH-DEBUG] Removed {removed_cols} OHLCV columns")
     
-    print(f"\n--- Applying Missing Value Filter to Technicals ---")
-    print(f"  > Shape before filtering: {final_df.shape}")
-    
+    # Apply missing value filter
+    print(f"\n[TECH-INFO] Applying missing value filter (threshold: {missing_thresh})")
     if len(final_df) > 0:
         missing_proportions = final_df.isnull().sum() / len(final_df)
         cols_to_drop = missing_proportions[missing_proportions >= missing_thresh].index.tolist()
-        print(f"  > Columns to drop ({len(cols_to_drop)}): {cols_to_drop}")
         
         if cols_to_drop:
-            final_df.drop(columns=cols_to_drop, inplace=True, errors="ignore")
+            print(f"[TECH-DEBUG] Dropping {len(cols_to_drop)} columns with >= {missing_thresh*100:.0f}% missing:")
+            print(f"[TECH-DEBUG] Dropped columns: {cols_to_drop[:10]}{'...' if len(cols_to_drop) > 10 else ''}")
+            final_df.drop(columns=cols_to_drop, inplace=True)
         
-        print(f"  > Final shape after filtering: {final_df.shape}")
+        print(f"[TECH-INFO] Final shape after filtering: {final_df.shape}")
     
     final_df.to_parquet(output_path, index=False)
     print(f"\n✅ Saved {len(final_df)} technical feature records to {output_path}")

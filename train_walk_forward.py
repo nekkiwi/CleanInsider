@@ -9,14 +9,15 @@ def main():
 
     strategies = [
         ('1w', 0.05, -0.05),
-        ('2w', 0.07, -0.07),
-        ('1m', 0.10, -0.10),
+        ('1w', 0.05, -0.10),
+        ('2w', 0.05, -0.05),
+        ('2w', 0.05, -0.10),
     ]
 
     binary_thresholds_pct = [0, 2, 5]
     model_type = "LightGBM"
-    top_n_features = 75
-    seeds = [42, 123, 2024]
+    top_n_features = 100
+    seeds = [42, 123, 2024, 567, 890]
     
     # This now correctly controls the number of walk-forward validation folds.
     # The final test set is handled automatically.

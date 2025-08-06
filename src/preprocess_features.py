@@ -1,12 +1,13 @@
 # file: src/preprocess_features.py
 
 import time
+import json
 from pathlib import Path
 import pandas as pd
 from .preprocess.time_based_splitter import create_time_based_splits
 from .preprocess.fold_processor import FoldProcessor
 from .scrapers.feature_scraper.feature_scraper_util.general_utils import report_missing_data
-from .preprocess.utils import save_columns_list
+from .preprocess.utils import save_columns_list, save_preprocessing_artifacts  
 
 def run_preprocess_pipeline(config, num_folds=5, corr_thresh=0.8, var_thresh=0.0001, missing_thresh=0.6):
     """
@@ -26,6 +27,9 @@ def run_preprocess_pipeline(config, num_folds=5, corr_thresh=0.8, var_thresh=0.0
     info_dir.mkdir(parents=True, exist_ok=True)
     input_path = features_dir / "raw_features.parquet"
     
+    preprocessing_artifacts_dir = features_dir / "preprocessing"
+    preprocessing_artifacts_dir.mkdir(parents=True, exist_ok=True)
+    
     df = pd.read_parquet(input_path)
     print(f"Loaded {len(df)} rows with {df.shape[1]} features.")
     df_split, _ = create_time_based_splits(df, n_splits=n_total_splits)
@@ -42,9 +46,12 @@ def run_preprocess_pipeline(config, num_folds=5, corr_thresh=0.8, var_thresh=0.0
         
         report_missing_data(train_df_raw, output_dir=info_dir / f"fold_{i}")
         
-        processor = FoldProcessor(corr_threshold=corr_thresh, variance_threshold=var_thresh)
+        processor = FoldProcessor(corr_threshold=corr_thresh, variance_threshold=var_thresh, missing_thresh=missing_thresh, debug=False)
         processor.fit(train_df_raw)
         fold_processors[i] = processor
+        
+        fold_artifacts_dir = preprocessing_artifacts_dir / f"fold_{i}"
+        save_preprocessing_artifacts(processor, fold_artifacts_dir)
         
         processed_df = processor.transform(train_df_raw)
         fold_surviving_features.append(set(processed_df.columns))
@@ -56,6 +63,11 @@ def run_preprocess_pipeline(config, num_folds=5, corr_thresh=0.8, var_thresh=0.0
         
     common_features = sorted(list(set.intersection(*fold_surviving_features)))
     save_columns_list(pd.DataFrame(columns=common_features), info_dir / "common_features.txt")
+
+    common_features_path = preprocessing_artifacts_dir / "common_features.json"
+    with common_features_path.open("w") as f:
+        json.dump(common_features, f, indent=2)
+    
     print(f"\n--- Found {len(common_features)} features common across all {num_folds} training folds. ---")
 
     # --- PASS 2: Apply transformations and save final datasets ---
@@ -94,6 +106,9 @@ def run_preprocess_pipeline(config, num_folds=5, corr_thresh=0.8, var_thresh=0.0
     # Use the processor from the LARGEST training set (from the last validation fold)
     # This is the most robust choice and prevents any leakage from the test set itself.
     final_processor = fold_processors[num_folds]
+    
+    test_artifacts_dir = preprocessing_artifacts_dir / "test_set"
+    save_preprocessing_artifacts(final_processor, test_artifacts_dir)
     
     test_df_processed = final_processor.transform(test_df_raw)
     

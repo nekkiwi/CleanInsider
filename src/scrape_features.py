@@ -18,20 +18,23 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     components_dir = Path(config.FEATURES_OUTPUT_PATH) / "components"
     components_dir.mkdir(parents=True, exist_ok=True)
     
+    base_path = components_dir / "openinsider_data.parquet"
     annual_path = components_dir / "all_annual_statements.parquet"
     tech_path = components_dir / "all_technical_indicators.parquet"
     macro_path = components_dir / "all_macro_data.parquet"
 
     # --- Step 1: Get base insider trading data ---
-    print("--- Step 1: Scraping base insider data ---")
+    # print("--- Step 1: Scraping base insider data ---")
     base_df = scrape_openinsider(num_weeks=num_weeks)
     if base_df.empty:
         print("No base data scraped. Halting.")
         return
     base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
+    base_df.to_parquet(base_path, index=False)
 
     # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
     generate_annual_statements(base_df, annual_path)
+    # base_df = pd.read_parquet(base_path)
     generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
     generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
 

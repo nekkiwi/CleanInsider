@@ -8,48 +8,58 @@ from lightgbm import LGBMClassifier, LGBMRegressor
 
 def calculate_spread_cost(X_fold: pd.DataFrame) -> pd.Series:
     """
-    Estimates a per-trade transaction cost based on a composite score of liquidity
-    and size proxy features, using the definitive, correct feature names.
+    Estimates per-trade transaction cost using your actual feature names.
     """
+    # print(f"[COST-DEBUG] Input shape: {X_fold.shape}")
+    # print(f"[COST-DEBUG] Available columns: {[col for col in X_fold.columns if any(term in col for term in ['Assets', 'Equity', 'Income', 'Value', 'log_'])]}")
+    
     cost_proxies = pd.DataFrame(index=X_fold.index)
 
-    # --- UPDATED TO USE YOUR FINAL FEATURE NAMES ---
-    # Proxy for company size (larger assets -> lower cost)
-    # We invert it so that smaller values (higher cost) get higher scores.
+    # Use your actual feature names for cost estimation
     if 'FIN_Total Assets_Y1' in X_fold.columns:
         cost_proxies['size_inv'] = -1 * X_fold['FIN_Total Assets_Y1']
+        # print(f"[COST-DEBUG] Using FIN_Total Assets_Y1 for size proxy")
+    elif 'FIN_Total Assets_Y2' in X_fold.columns:
+        cost_proxies['size_inv'] = -1 * X_fold['FIN_Total Assets_Y2']
+        # print(f"[COST-DEBUG] Using FIN_Total Assets_Y2 for size proxy")
 
-    # Proxy for company value/stability
     if 'FIN_Stockholders Equity_Y1' in X_fold.columns:
         cost_proxies['value'] = X_fold['FIN_Stockholders Equity_Y1']
+        # print(f"[COST-DEBUG] Using FIN_Stockholders Equity_Y1 for value proxy")
 
-    # Proxy for profitability
     if 'FIN_Net Income_Y1' in X_fold.columns:
         cost_proxies['profitability'] = X_fold['FIN_Net Income_Y1']
+        # print(f"[COST-DEBUG] Using FIN_Net Income_Y1 for profitability proxy")
+    elif 'FIN_Net Income_Y2' in X_fold.columns:
+        cost_proxies['profitability'] = X_fold['FIN_Net Income_Y2']
+        # print(f"[COST-DEBUG] Using FIN_Net Income_Y2 for profitability proxy")
 
-    # Proxy for the size of the trade itself
     if 'log_Value' in X_fold.columns:
         cost_proxies['trade_size'] = X_fold['log_Value']
-    # --- END OF UPDATES ---
+        # print(f"[COST-DEBUG] Using log_Value for trade size proxy")
 
     if cost_proxies.empty:
-        # If no proxy features are found, return a default flat cost of 5 bps
-        print("[WARN] No cost proxy features found. Using default 5bps cost.")
+        print("[COST-WARN] No cost proxy features found. Using default 5bps cost.")
         return pd.Series(0.0005, index=X_fold.index)
 
-    # Normalize each proxy to be on a similar scale (0 to 1)
+    # print(f"[COST-DEBUG] Using {len(cost_proxies.columns)} cost proxies: {cost_proxies.columns.tolist()}")
+
+    # Normalize each proxy
     for col in cost_proxies.columns:
-        cost_proxies[col] = (cost_proxies[col] - cost_proxies[col].min()) / (cost_proxies[col].max() - cost_proxies[col].min())
+        col_min, col_max = cost_proxies[col].min(), cost_proxies[col].max()
+        if col_max != col_min:
+            cost_proxies[col] = (cost_proxies[col] - col_min) / (col_max - col_min)
+        else:
+            cost_proxies[col] = 0.5
 
-    # Create a composite score (simple average) and fill any NaNs
     composite_score = cost_proxies.mean(axis=1).fillna(0.5)
-
-    # Scale the score to a realistic bps range, e.g., 5 to 25 bps
     min_cost_bps, max_cost_bps = 5, 25
     scaled_cost_bps = min_cost_bps + (composite_score * (max_cost_bps - min_cost_bps))
-
-    # Convert bps to decimal form (e.g., 10 bps -> 0.0010)
-    return scaled_cost_bps / 10000
+    
+    final_costs = scaled_cost_bps / 10000
+    # print(f"[COST-DEBUG] Cost range: {final_costs.min()*10000:.1f} to {final_costs.max()*10000:.1f} bps")
+    
+    return final_costs
 
 def select_features_for_fold(X: pd.DataFrame, y: pd.Series, top_n: int, seed: int) -> list:
     """Selects the top N features based on LightGBM feature importance."""
