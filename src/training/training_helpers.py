@@ -5,6 +5,7 @@ import numpy as np
 from pathlib import Path
 from sklearn.metrics import matthews_corrcoef
 from lightgbm import LGBMClassifier, LGBMRegressor
+from scipy.stats import hypergeom
 
 def calculate_spread_cost(X_fold: pd.DataFrame) -> pd.Series:
     """
@@ -97,6 +98,25 @@ def find_optimal_threshold(predicted_returns: pd.Series, actual_returns: pd.Seri
             best_score, best_threshold = score, threshold
     return {'validation_score': best_score, 'optimal_threshold': best_threshold}
 
+def hypergeometric_pvalue(gt_hits_idx, selected_idx, population_size):
+    """
+    Compute the p-value for the overlap between ground truth hits and selected signals using the hypergeometric test.
+    - gt_hits_idx: indices of ground truth hits (set or pd.Index)
+    - selected_idx: indices of selected signals (set or pd.Index)
+    - population_size: total number of samples
+    """
+    gt_hits = set(gt_hits_idx)
+    selected = set(selected_idx)
+    n_gt_hits = len(gt_hits)
+    n_selected = len(selected)
+    n_overlap = len(gt_hits & selected)
+    if n_gt_hits == 0 or n_selected == 0 or population_size == 0:
+        return np.nan
+    # P-value: probability of getting at least n_overlap hits by chance
+    rv = hypergeom(population_size, n_gt_hits, n_selected)
+    pval = rv.sf(n_overlap - 1)  # sf is 1-cdf, so this is P(X >= n_overlap)
+    return pval
+
 def evaluate_fold(classifier, regressor, optimal_threshold, X_eval, y_bin_eval, y_cont_eval, costs_eval):
     """Evaluates a model on a given dataset (validation or test) using a pre-determined optimal threshold."""
     if X_eval.empty or pd.isna(optimal_threshold): return None
@@ -114,13 +134,36 @@ def evaluate_fold(classifier, regressor, optimal_threshold, X_eval, y_bin_eval, 
 
     sharpe_final_net = annualize_sharpe_ratio(final_returns_net)
     adj_sharpe_final_net = adjusted_sharpe_ratio(sharpe_final_net, len(final_returns_net))
-    
+
+    # Classifier-only metrics (on all buy_signals)
+    if buy_signals.sum() > 1:
+        # Only compute if there are at least 2 signals
+        classifier_returns = y_cont_eval.loc[X_eval.index[buy_signals == 1]] - costs_eval.loc[X_eval.index[buy_signals == 1]]
+        sharpe_classifier = annualize_sharpe_ratio(classifier_returns)
+        adj_sharpe_classifier = adjusted_sharpe_ratio(sharpe_classifier, len(classifier_returns))
+    else:
+        sharpe_classifier = np.nan
+        adj_sharpe_classifier = np.nan
+
+    # Hypergeometric p-value for ground truth hits vs classifier hits
+    gt_hits_idx = X_eval.index[y_bin_eval == 1]
+    classifier_hits_idx = X_eval.index[buy_signals == 1]
+    pval_classifier = hypergeometric_pvalue(gt_hits_idx, classifier_hits_idx, len(X_eval))
+
+    # Hypergeometric p-value for ground truth hits vs final hits
+    final_hits_idx = final_selection_idx
+    pval_final = hypergeometric_pvalue(gt_hits_idx, final_hits_idx, len(X_eval))
+
     return {
         'Adj Sharpe (Net)': adj_sharpe_final_net,
         'Sharpe (Net)': sharpe_final_net,
         'Num Signals (Final)': len(final_returns_net),
         'Avg Cost (bps)': costs_eval.loc[final_selection_idx].mean() * 10000,
-        'MCC (Classifier)': matthews_corrcoef(y_bin_eval, buy_signals)
+        'MCC (Classifier)': matthews_corrcoef(y_bin_eval, buy_signals),
+        'Sharpe (Classifier)': sharpe_classifier,
+        'Adj Sharpe (Classifier)': adj_sharpe_classifier,
+        'GT-vs-Classifier p-value': pval_classifier,
+        'GT-vs-Final p-value': pval_final
     }
 
 def save_strategy_results(results_df: pd.DataFrame, stats_dir: Path, file_name_prefix: str):

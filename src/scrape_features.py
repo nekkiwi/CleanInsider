@@ -25,40 +25,48 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
 
     # --- Step 1: Get base insider trading data ---
     # print("--- Step 1: Scraping base insider data ---")
-    base_df = scrape_openinsider(num_weeks=num_weeks)
-    if base_df.empty:
-        print("No base data scraped. Halting.")
-        return
-    base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
-    base_df.to_parquet(base_path, index=False)
+    # base_df = scrape_openinsider(num_weeks=num_weeks)
+    # if base_df.empty:
+    #     print("No base data scraped. Halting.")
+    #     return
+    # base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
+    # base_df.to_parquet(base_path, index=False)
 
-    # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
-    generate_annual_statements(base_df, annual_path)
-    # base_df = pd.read_parquet(base_path)
-    generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
-    generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
+    # # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
+    # generate_annual_statements(base_df, annual_path, sec_parquet_dir=config.EDGAR_DOWNLOAD_PATH, request_header=config.REQUESTS_HEADER)
+    # # base_df = pd.read_parquet(base_path)
+    # generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
+    # generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
 
-    # --- Step 5: Merge all components ---
+    # --- Step 5: Merge all feature components ---
     print("\n--- Step 5: Merging all feature components ---")
     
     # Load primary components
+    base_df = pd.read_parquet(base_path)
     annual_df = pd.read_parquet(annual_path)
     macro_df = pd.read_parquet(macro_path)
 
     # Convert date columns for merging
     base_df['Filing Date'] = pd.to_datetime(base_df['Filing Date'])
+    annual_df['Filing Date'] = pd.to_datetime(annual_df['Filing Date'])
     macro_df['Filing Date'] = pd.to_datetime(macro_df['Filing Date'])
 
-    # Start with an inner join to keep only tickers with financial data
-    merged_df = pd.merge(base_df, annual_df, on="Ticker", how="inner")
-    print(f"  Rows after merging with annual statements: {len(merged_df)}")
+    # Defensively handle empty annual statements
+    if annual_df.empty:
+        print("  [WARN] Annual statements file is empty. Proceeding without financial data.")
+        merged_df = base_df.copy()
+    else:
+        # Start with an inner join to keep only tickers with financial data
+        merged_df = pd.merge(base_df, annual_df, on=["Ticker", "Filing Date"], how="inner")
+        print(f"  Rows after merging with annual statements: {len(merged_df)}")
     
     # --- THIS IS THE FIX: Defensively merge technical indicators ---
     if tech_path.exists():
         tech_df = pd.read_parquet(tech_path)
         if not tech_df.empty:
-            tech_df['Filing Date'] = pd.to_datetime(tech_df['Filing Date'])
-            merged_df = pd.merge(merged_df, tech_df, on=["Ticker", "Filing Date"], how="left")
+            print("merged_df columns before tech merge:", merged_df.columns)
+            print("tech_df columns before tech merge:", tech_df.columns)
+            merged_df = pd.merge(merged_df, tech_df, on=["Ticker", "Filing Date"], how="inner")
         else:
             print("  [WARN] Technical indicators file was created but is empty. Skipping merge.")
     else:

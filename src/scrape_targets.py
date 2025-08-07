@@ -4,9 +4,9 @@ import time
 
 # --- Import the main function from each step of the pipeline ---
 # Note: This assumes you have renamed the files to be valid Python modules.
-from scrapers.target_scraper.create_master_event_list import create_master_event_list
-from scrapers.target_scraper.calculate_master_targets import calculate_master_targets
-from scrapers.target_scraper.assemble_final_targets import assemble_final_targets
+from src.scrapers.target_scraper.create_master_event_list import create_master_event_list
+from src.scrapers.target_scraper.calculate_master_targets import calculate_master_targets
+from src.scrapers.target_scraper.assemble_final_targets import assemble_final_targets
 
 def run_target_generation_pipeline(config, target_combinations: list, n_splits: int = 7, batch_size: int = 100, debug: bool = False):
     """

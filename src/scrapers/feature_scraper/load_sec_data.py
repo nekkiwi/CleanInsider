@@ -31,8 +31,6 @@ def _pre_filter_sec_columns(
     if not all_rows:
         return []
 
-    print("\n--- Pre-filtering SEC columns to save memory ---")
-
     # Count how many times each feature key appears across all dictionaries
     key_counter = Counter(key for row_dict in all_rows for key in row_dict)
 
@@ -44,12 +42,6 @@ def _pre_filter_sec_columns(
     for key, count in key_counter.items():
         if count >= min_occurrences:
             keys_to_keep.add(key)
-
-    original_key_count = len(key_counter)
-    print(f"   → Found {original_key_count} unique SEC tags.")
-    print(
-        f"   → Keeping {len(keys_to_keep)} features present in at least {presence_threshold:.1%} of rows."
-    )
 
     # Create a new list of dictionaries, containing only the keys we want to keep
     # This is much more memory-efficient than creating a huge DataFrame and then dropping columns.
@@ -63,7 +55,6 @@ def _pre_filter_sec_columns(
 
 def fetch_ticker_cik_map(request_header: str):
     """Fetches the ticker-to-CIK mapping from the SEC."""
-    print("🔄 Fetching ticker->CIK map from SEC...")
     try:
         resp = requests.get(
             "https://www.sec.gov/files/company_tickers.json", headers=request_header
@@ -73,10 +64,8 @@ def fetch_ticker_cik_map(request_header: str):
         mapping = {
             str(v["ticker"]).upper(): str(v["cik_str"]).zfill(10) for v in data.values()
         }
-        print(f"   → Retrieved {len(mapping)} entries.")
         return mapping
     except Exception as e:
-        print(f"   ❌ Failed to fetch CIK map: {e}")
         return {}
 
 
@@ -129,10 +118,6 @@ def preload_and_process_sec_quarters(parquet_dir: Path, quarters: list) -> dict:
     """
     Uses joblib to load and process all required quarterly SEC data in parallel.
     """
-    print(
-        f"--- Starting SEC Data Pre-computation for {len(quarters)} quarters (in parallel) ---"
-    )
-
     # Use n_jobs=-2 to use all CPU cores but one, keeping the system responsive.
     n_jobs = -2
 
@@ -141,13 +126,12 @@ def preload_and_process_sec_quarters(parquet_dir: Path, quarters: list) -> dict:
         delayed(_process_single_quarter)(q_name, parquet_dir) for q_name in quarters
     ]
 
-    # Run the tasks in parallel with a tqdm progress bar
-    results = Parallel(n_jobs=n_jobs)(tqdm(tasks, desc="Processing SEC Quarters"))
+    # Run the tasks in parallel without progress bar to reduce clutter
+    results = Parallel(n_jobs=n_jobs)(tasks)
 
     # Assemble the results into the data warehouse dictionary
     data_warehouse = {q_name: data for q_name, data in results if data is not None}
 
-    print("--- ✅ SEC Data Pre-computation Phase Complete ---\n")
     return data_warehouse
 
 
@@ -176,10 +160,7 @@ def load_sec_features_df(input_df, parquet_dir_str, request_header, n_prev=2):
     input_df["CIK"] = input_df["Ticker"].str.upper().map(cik_map)
 
     all_rows = []
-    print("--- Starting SEC Feature Lookup (Serial) ---")
-    for index, row in tqdm(
-        input_df.iterrows(), total=len(input_df), desc="Looking up SEC Features"
-    ):
+    for index, row in input_df.iterrows():
         ticker, fdate_str, cik = row["Ticker"], row["Filing Date"], row["CIK"]
         if pd.isna(cik):
             continue
@@ -219,7 +200,6 @@ def load_sec_features_df(input_df, parquet_dir_str, request_header, n_prev=2):
         row_dict.update(all_s.to_dict())
         all_rows.append(row_dict)
 
-    print("--- ✅ SEC Feature Lookup Complete ---\n")
     filtered_rows = _pre_filter_sec_columns(
         all_rows, presence_threshold=0.2
     )  # Keep features in at least 20% of rows

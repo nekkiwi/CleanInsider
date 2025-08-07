@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from joblib import Parallel, delayed
 from tqdm import tqdm
-import config
+from src import config
 from .feature_scraper_util.general_utils import add_date_features
 
 def _parse_insider_titles(df: pd.DataFrame) -> pd.DataFrame:
