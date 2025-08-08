@@ -30,11 +30,11 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     #     print("No base data scraped. Halting.")
     #     return
     # base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
-    # base_df.to_parquet(base_path, index=False)
+    # # base_df.to_parquet(base_path, index=False)
 
-    # # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
+    # # # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
     # generate_annual_statements(base_df, annual_path, sec_parquet_dir=config.EDGAR_DOWNLOAD_PATH, request_header=config.REQUESTS_HEADER)
-    # # base_df = pd.read_parquet(base_path)
+    # # # base_df = pd.read_parquet(base_path)
     # generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
     # generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
 
@@ -47,7 +47,6 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     macro_df = pd.read_parquet(macro_path)
 
     # Convert date columns for merging
-    base_df['Filing Date'] = pd.to_datetime(base_df['Filing Date'])
     annual_df['Filing Date'] = pd.to_datetime(annual_df['Filing Date'])
     macro_df['Filing Date'] = pd.to_datetime(macro_df['Filing Date'])
 
@@ -64,8 +63,6 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     if tech_path.exists():
         tech_df = pd.read_parquet(tech_path)
         if not tech_df.empty:
-            print("merged_df columns before tech merge:", merged_df.columns)
-            print("tech_df columns before tech merge:", tech_df.columns)
             merged_df = pd.merge(merged_df, tech_df, on=["Ticker", "Filing Date"], how="inner")
         else:
             print("  [WARN] Technical indicators file was created but is empty. Skipping merge.")

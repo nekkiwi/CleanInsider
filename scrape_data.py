@@ -7,7 +7,7 @@ from src.scrape_features import run_feature_scraping_pipeline
 from src.scrape_targets import run_target_generation_pipeline
 from src.scrapers.feature_scraper.feature_scraper_util.general_utils import create_output_directories
 
-def main(num_weeks: int):
+def main(num_weeks: int, target_only: bool):
     """
     Main entry point for the data scraping pipeline.
     """
@@ -21,30 +21,28 @@ def main(num_weeks: int):
 
     # 2. Run the full feature scraping pipeline
     num_folds = 5
-    run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
+    if not target_only:
+        run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
 
-    # 3. Run the preprocessing pipeline
-    # The start_date argument has been removed as it is no longer needed
-    # by the new version of the preprocessing script.
-    run_preprocess_pipeline(
-        config=config,
-        num_folds=num_folds, # This will generate 5 validation folds and 1 test set
-        corr_thresh=0.8,
-        var_thresh=0.0001,
-        missing_thresh=0.6
-    )
+        # 3. Run the preprocessing pipeline
+        # The start_date argument has been removed as it is no longer needed
+        # by the new version of the preprocessing script.
+        run_preprocess_pipeline(
+            config=config,
+            num_folds=num_folds, # This will generate 5 validation folds and 1 test set
+            corr_thresh=0.8,
+            var_thresh=0.0001,
+            missing_thresh=0.6
+        )
 
     # --- Target Generation Pipeline (can be run after preprocessing) ---
     target_combinations = [
         {'time': '1w', 'tp': 0.05, 'sl': -0.05},
         {'time': '1w', 'tp': 0.05, 'sl': -0.10},
         {'time': '1w', 'tp': 0.10, 'sl': -0.10},
-        {'time': '2w', 'tp': 0.05, 'sl': -0.05},
-        {'time': '2w', 'tp': 0.05, 'sl': -0.10},
-        {'time': '2w', 'tp': 0.10, 'sl': -0.10},
-        {'time': '1m', 'tp': 0.05, 'sl': -0.05},
-        {'time': '1m', 'tp': 0.05, 'sl': -0.10},
-        {'time': '1m', 'tp': 0.10, 'sl': -0.10},
+        {'time': '1w', 'tp': 0.10, 'sl': -0.05},
+        {'time': '1w', 'tp': 0.15, 'sl': -0.05},
+        {'time': '1w', 'tp': 0.15, 'sl': -0.10},
     ]
 
     # Uncomment the following lines to run target generation
@@ -59,11 +57,17 @@ def main(num_weeks: int):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the full data scraping pipeline.")
     parser.add_argument(
+        "--target_only",
+        type=bool,
+        default=False,
+        help="Only run the target generation pipeline.",
+    )
+    parser.add_argument(
         "--weeks",
         type=int,
         default=3,
         help="Number of weeks of insider trading data to scrape. Default is 3.",
     )
     args = parser.parse_args()
-    main(num_weeks=args.weeks)
+    main(num_weeks=args.weeks, target_only=args.target_only)
 

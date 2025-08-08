@@ -147,7 +147,7 @@ def calculate_realized_alpha_series(
     ]
     
     desc = f"Calculating Alpha ({timepoint_str}, TP:{take_profit}, SL:{stop_loss})"
-    parallel_results = Parallel(n_jobs=-2)(tqdm(tasks, desc=desc, total=len(tasks)))
+    parallel_results = Parallel(n_jobs=-2)(tqdm(tasks, desc=desc, total=len(tasks), leave=False))
     
     results_list = [res[0] for res in parallel_results if res is not None and not res[0].empty]
     debug_logs = [res[1] for res in parallel_results if res is not None and res[1]]
