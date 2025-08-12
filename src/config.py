@@ -8,6 +8,7 @@ DATA_DIR = ROOT_DIR / "data"
 # --- Output Data Paths ---
 FEATURES_OUTPUT_PATH = DATA_DIR / "scrapers" / "features"
 FEATURES_INFO_OUTPUT_PATH = FEATURES_OUTPUT_PATH / "info"
+FEATURES_COMPONENTS_PATH = FEATURES_OUTPUT_PATH / "components"
 EDGAR_DOWNLOAD_PATH = DATA_DIR / "sec_database" / "parquet"
 STOOQ_DATABASE_PATH = DATA_DIR / "stooq_database"
 
@@ -15,9 +16,14 @@ RAW_FEATURES_PATH = FEATURES_OUTPUT_PATH / "raw_features.parquet"
 PREPROCESSED_FEATURES_PATH = FEATURES_OUTPUT_PATH / "preprocessed_features.parquet"
 TARGETS_OUTPUT_PATH = DATA_DIR / "scrapers" / "targets"
 
+MASTER_EVENT_LIST_PATH = DATA_DIR / "scrapers" / "targets" / "master_event_list.parquet"
+
 # --- Scraping Parameters ---
 # User agent for making polite requests
 REQUESTS_HEADER = {"User-Agent": "YourName/YourProject my.email@domain.com"}
 
 # List of all output directories to be created by the pipeline
-DIRECTORIES_TO_CREATE = [FEATURES_OUTPUT_PATH, FEATURES_INFO_OUTPUT_PATH]
+OHLCV_PAST_COMPONENT_PATH = FEATURES_COMPONENTS_PATH / "ohlcv_past.parquet"
+OHLCV_FUTURE_COMPONENT_PATH = FEATURES_COMPONENTS_PATH / "ohlcv_future.parquet"
+
+DIRECTORIES_TO_CREATE = [FEATURES_OUTPUT_PATH, FEATURES_INFO_OUTPUT_PATH, FEATURES_COMPONENTS_PATH]

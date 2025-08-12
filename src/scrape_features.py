@@ -4,9 +4,10 @@ import pandas as pd
 from pathlib import Path
 import time
 from src.scrapers.feature_scraper.scrape_openinsider import scrape_openinsider
-from src.scrapers.feature_scraper.load_annual_statements import generate_annual_statements
 from src.scrapers.feature_scraper.load_technical_indicators import generate_technical_indicators
 from src.scrapers.feature_scraper.load_macro_features import generate_macro_features
+from src.scrapers.feature_scraper.load_annual_statements import generate_annual_statements
+from src.scrapers.feature_scraper.build_event_ohlcv import build_event_ohlcv_datasets
 
 def run_feature_scraping_pipeline(num_weeks: int, config):
     """
@@ -24,19 +25,32 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     macro_path = components_dir / "all_macro_data.parquet"
 
     # --- Step 1: Get base insider trading data ---
-    # print("--- Step 1: Scraping base insider data ---")
-    # base_df = scrape_openinsider(num_weeks=num_weeks)
-    # if base_df.empty:
-    #     print("No base data scraped. Halting.")
-    #     return
-    # base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
-    # # base_df.to_parquet(base_path, index=False)
+    print("--- Step 1: Scraping base insider data ---")
+    # Scrape the requested number of weeks that all end at 6 months ago
+    base_df = scrape_openinsider(num_weeks=num_weeks, start_months_ago=None, end_months_ago=6)
+    if base_df.empty:
+        print("No base data scraped. Halting.")
+        return
+    base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
+    base_df.to_parquet(base_path, index=False)
 
-    # # # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
-    # generate_annual_statements(base_df, annual_path, sec_parquet_dir=config.EDGAR_DOWNLOAD_PATH, request_header=config.REQUESTS_HEADER)
-    # # # base_df = pd.read_parquet(base_path)
-    # generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
-    # generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
+    # --- Build OHLCV component parquets (past for TA, future for targets) ---
+    print("--- Step 1b: Building OHLCV past/future components ---")
+    build_event_ohlcv_datasets(
+        base_df=base_df,
+        db_path_str=str(config.STOOQ_DATABASE_PATH),
+        past_output_path=Path(config.OHLCV_PAST_COMPONENT_PATH),
+        future_output_path=Path(config.OHLCV_FUTURE_COMPONENT_PATH),
+        past_lookback_calendar_days=400,
+        future_lookahead_trading_days=126,
+        n_jobs=-2,
+    )
+
+    # # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
+    generate_annual_statements(base_df, annual_path, sec_parquet_dir=config.EDGAR_DOWNLOAD_PATH, request_header=config.REQUESTS_HEADER)
+    # Technicals now read from ohlcv_past component to avoid lookahead
+    generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
+    generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
 
     # --- Step 5: Merge all feature components ---
     print("\n--- Step 5: Merging all feature components ---")

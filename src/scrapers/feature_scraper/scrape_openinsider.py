@@ -101,19 +101,33 @@ def _scrape_date_range_worker(date_range: tuple, request_header: dict) -> pd.Dat
     # print(f"[SCRAPE-WORKER] Combined range data: {full_df.shape}")
     return full_df
 
-def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
-    print(f"\n[MAIN-INFO] Starting scrape_openinsider for {num_weeks} weeks")
-    
-    # Step 1: Create date ranges
-    end_date = datetime.datetime.now() - datetime.timedelta(days=30*3)
+def scrape_openinsider(num_weeks: int, start_months_ago=None, end_months_ago: int = 6) -> pd.DataFrame:
+    """
+    Scrape OpenInsider weekly ranges ending at `end_months_ago` months ago.
+    If `start_months_ago` is provided, scrape from that month to `end_months_ago`.
+    Otherwise, scrape the last `num_weeks` weeks ending at `end_months_ago`.
+    """
+    today = datetime.datetime.now()
+    range_end = today - datetime.timedelta(days=end_months_ago * 30)
+    if start_months_ago is not None:
+        range_start = today - datetime.timedelta(days=int(start_months_ago) * 30)
+        print(f"\n[MAIN-INFO] Starting scrape_openinsider: from {start_months_ago} to {end_months_ago} months ago")
+    else:
+        # Use num_weeks before the end boundary
+        range_start = range_end - datetime.timedelta(days=max(1, num_weeks) * 7)
+        print(f"\n[MAIN-INFO] Starting scrape_openinsider: last {num_weeks} weeks ending {end_months_ago} months ago")
+    if range_end <= range_start:
+        range_end = range_start + datetime.timedelta(days=7)
+    start_cursor = range_start
+    end_cursor = range_end
     date_ranges = []
-    for week in range(num_weeks):
-        start_date = end_date - datetime.timedelta(days=7)
-        date_ranges.append((start_date, end_date))
-        # # print(f"[MAIN-DEBUG] Week {week+1}: {start_date.date()} to {end_date.date()}")
-        end_date = start_date
+    # Build forward weekly ranges to be polite with the site ordering
+    while start_cursor < end_cursor:
+        next_end = min(start_cursor + datetime.timedelta(days=7), end_cursor)
+        date_ranges.append((start_cursor, next_end))
+        start_cursor = next_end
 
-    print(f"[MAIN-INFO] Created {len(date_ranges)} date ranges for parallel scraping")
+    print(f"[MAIN-INFO] Created {len(date_ranges)} weekly date ranges for parallel scraping")
 
     # Step 2: Parallel scraping
     print(f"Initiating parallel scrape for {num_weeks} weeks of data...")

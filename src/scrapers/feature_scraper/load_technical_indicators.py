@@ -3,8 +3,9 @@ import numpy as np
 import ta
 from tqdm import tqdm
 from joblib import Parallel, delayed
-from ..data_loader import load_ohlcv_with_fallback
 import warnings
+from src import config
+from typing import Optional
 
 def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """
@@ -130,58 +131,85 @@ def calculate_indicators(stock_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     # print(f"[CALC-SUCCESS {ticker}] Finished indicator calculation. Final shape: {df.shape}")
     return df
 
-def _process_ticker_for_technicals(work_item: tuple, db_path_str: str) -> list[dict] | None:
-    """Worker function to process all events for a single ticker with verbose logging."""
+def _calculate_corwin_schultz(df: pd.DataFrame, window: int = 20) -> pd.Series:
+    """Corwin–Schultz spread estimator on a daily OHLC dataframe."""
+    if 'High' not in df.columns or 'Low' not in df.columns:
+        return pd.Series(index=df.index, dtype=float)
+    log_hl = np.log(df['High'] / df['Low'])
+    log_hl_sq = log_hl ** 2
+    beta = log_hl_sq.rolling(window=2).sum().rolling(window=window).mean()
+    gamma = (
+        np.log(
+            df['High'].rolling(window=2).max() / df['Low'].rolling(window=2).min()
+        ) ** 2
+    ).rolling(window=window).mean()
+    alpha = ((np.sqrt(2 * beta) - np.sqrt(beta)) ** 2) / (3 - 2 * np.sqrt(2))
+    alpha = alpha.clip(lower=0)
+    spread = 2 * (np.exp(np.sqrt(alpha)) - 1) / (1 + np.exp(np.sqrt(alpha)))
+    spread.name = 'cs_spread'
+    return spread
+
+
+def _process_ticker_for_technicals_from_parquet(work_item: tuple, past_parquet_path: str) -> Optional[list[dict]]:
+    """Process all events for a single ticker using the prebuilt ohlcv_past parquet."""
     ticker, filing_dates = work_item
-    
-    min_date = pd.to_datetime(min(filing_dates)) - pd.Timedelta(days=365*2)
-    
-    # print(f"\n[WORKER-INFO {ticker}] Starting processing for {len(filing_dates)} filing dates. Need history from {min_date.date()}.")
-    stock_df_raw = load_ohlcv_with_fallback(ticker, db_path_str, required_start_date=min_date)
-    
-    if stock_df_raw.empty: 
-        print(f"[WORKER-FAIL {ticker}] No OHLCV data found from any source. Skipping ticker.")
+
+    try:
+        # Efficiently read only rows for this ticker
+        past_df = pd.read_parquet(past_parquet_path, filters=[[('Ticker', '==', ticker)]])
+    except Exception:
+        # Fallback: load full and filter (slower but robust)
+        past_full = pd.read_parquet(past_parquet_path)
+        past_df = past_full[past_full['Ticker'] == ticker]
+
+    if past_df.empty:
         return None
-    
+
+    stock_df_raw = (
+        past_df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        .dropna(subset=['Date'])
+        .assign(Date=lambda d: pd.to_datetime(d['Date']))
+        .set_index('Date')
+        .sort_index()
+    )
+
+    if stock_df_raw.empty:
+        return None
+
+    # Compute CS spreads over the past-only series
+    cs_spreads = _calculate_corwin_schultz(stock_df_raw).rename('cs_spread')
+
     stock_df_indicators = calculate_indicators(stock_df_raw, ticker)
-    if stock_df_indicators.empty: 
-        print(f"[WORKER-FAIL {ticker}] Indicator calculation resulted in an empty DataFrame. Skipping ticker.")
+    if stock_df_indicators.empty:
         return None
 
     ticker_rows = []
-    # print(f"[WORKER-INFO {ticker}] Looking up technical features for each filing date...")
-    
+
     for date_str in filing_dates:
         target_date = pd.to_datetime(date_str)
         try:
-            # Use asof to get the most recent data before or on the target date
+            # Most recent data at or before filing date
             if target_date in stock_df_indicators.index:
                 features = stock_df_indicators.loc[target_date]
             else:
-                # Find the closest date before target_date
                 available_dates = stock_df_indicators.index[stock_df_indicators.index <= target_date]
                 if len(available_dates) > 0:
-                    closest_date = available_dates.max()
-                    features = stock_df_indicators.loc[closest_date]
+                    features = stock_df_indicators.loc[available_dates.max()]
                 else:
-                    print(f"  [WORKER-WARN {ticker}] No data available for or before {target_date.date()}")
                     continue
-            
-            # Convert to dictionary and add metadata
-            if isinstance(features, pd.Series):
-                result_dict = features.to_dict()
-                result_dict["Ticker"] = ticker
-                result_dict["Filing Date"] = date_str  # Standardize to Filing_Date in output
-                ticker_rows.append(result_dict)
-                # print(f"  [WORKER-DEBUG {ticker}] Found features for {target_date.date()}")
-            else:
-                print(f"  [WORKER-WARN {ticker}] Unexpected data type for features: {type(features)}")
-                
-        except Exception as e:
-            print(f"  [WORKER-ERROR {ticker}] Error processing date {target_date.date()}: {e}")
+
+            # cs_spread_prev_day: strictly before filing date
+            prev_dates = cs_spreads.index[cs_spreads.index < target_date]
+            cs_prev = float(cs_spreads.loc[prev_dates.max()]) if len(prev_dates) > 0 else np.nan
+
+            result_dict = features.to_dict() if isinstance(features, pd.Series) else {}
+            result_dict['Ticker'] = ticker
+            result_dict['Filing Date'] = date_str
+            result_dict['cs_spread_prev_day'] = cs_prev
+            ticker_rows.append(result_dict)
+        except Exception:
             continue
-            
-    # print(f"[WORKER-SUCCESS {ticker}] Successfully processed {len(ticker_rows)} of {len(filing_dates)} events.")
+
     return ticker_rows if ticker_rows else None
 
 
@@ -211,9 +239,10 @@ def generate_technical_indicators(base_df: pd.DataFrame, db_path_str: str, outpu
     work_items = list(base_df.groupby(ticker_col)[date_col].apply(list).items())
     print(f"[TECH-INFO] Created {len(work_items)} work items for {base_df[ticker_col].nunique()} unique tickers")
     
-    # Process in parallel
+    # Process in parallel using ohlcv_past parquet to avoid any lookahead
+    past_parquet_path = str(config.OHLCV_PAST_COMPONENT_PATH)
     n_jobs = max(1, min(4, len(work_items)))
-    tasks = [delayed(_process_ticker_for_technicals)(item, db_path_str) for item in work_items]
+    tasks = [delayed(_process_ticker_for_technicals_from_parquet)(item, past_parquet_path) for item in work_items]
     results = Parallel(n_jobs=n_jobs)(tqdm(tasks, desc="Calculating Technicals"))
     
     # Combine results
@@ -242,7 +271,7 @@ def generate_technical_indicators(base_df: pd.DataFrame, db_path_str: str, outpu
     print(f"[TECH-INFO] Combined dataframe shape: {final_df.shape}")
     print(f"[TECH-DEBUG] Sample columns: {final_df.columns[:10].tolist()}...")
     
-    # Remove OHLCV columns
+    # Remove OHLCV columns if any leaked through
     ohlcv_cols = ["Open", "High", "Low", "Close", "Volume"]
     before_removal = final_df.shape[1]
     final_df.drop(columns=ohlcv_cols, inplace=True, errors="ignore")

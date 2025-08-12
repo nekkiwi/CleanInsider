@@ -51,10 +51,8 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
         # print(f"  [CLEAN-DEBUG] Flattened columns: {df_clean.columns.tolist()}")
     
     # Aggressively standardize all column names to simple, flat strings.
-    original_cols = df_clean.columns.tolist()
     df_clean.columns = [str(col).lower().replace('<', '').replace('>', '').strip() for col in df_clean.columns]
     df_clean = df_clean.loc[:, ~df_clean.columns.duplicated(keep='first')]
-    # print(f"  [CLEAN-DEBUG] Columns after standardization: {df_clean.columns.tolist()}")
 
     # --- Step 2: Unify Date into the Index (THE CRITICAL FIX) ---
     # If 'date' exists as a column (from local files), set it as the index.
@@ -124,11 +122,30 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
     # print(f"  [CLEAN-DEBUG] {close_na_count} rows have NaN Close values and will be dropped")
     df_final = df_final.dropna(subset=['Close'])
     
+    # --- Step 4: Detect and Apply Split Adjustments (THE DEFINITIVE FIX) ---
+    # This ensures that data from any source is properly adjusted.
+    if 'Adj Close' not in df_final.columns:
+        close_to_prev_close_ratio = df_final['Close'] / df_final['Close'].shift(1)
+        # Detect splits (e.g., a 50% price drop is a 2-for-1 split, ratio ~0.5)
+        # We look for large drops, typical of 2:1, 3:1, or 4:1 splits.
+        split_candidates = close_to_prev_close_ratio[
+            (close_to_prev_close_ratio > 0.1) & (close_to_prev_close_ratio < 0.7)
+        ]
+
+        for date, ratio in split_candidates.items():
+            # Round to the nearest common split ratio (e.g., 0.5, 0.33, 0.25)
+            split_ratio = 1 / round(1 / ratio)
+            
+            # Adjust all prices and volume before this date
+            price_cols = ['Open', 'High', 'Low', 'Close']
+            df_final.loc[df_final.index < date, price_cols] *= split_ratio
+            if 'Volume' in df_final.columns:
+                df_final.loc[df_final.index < date, 'Volume'] = (df_final.loc[df_final.index < date, 'Volume'] / split_ratio).round().astype('int64')
+    
     # Fill missing volume with 0 if Volume column exists but has NaN values
     if 'Volume' in df_final.columns:
         volume_na_count = df_final['Volume'].isna().sum()
         if volume_na_count > 0:
-            # print(f"  [CLEAN-DEBUG] Filling {volume_na_count} NaN Volume values with 0")
             df_final['Volume'] = df_final['Volume'].fillna(0)
 
     if df_final.empty:
@@ -161,7 +178,7 @@ def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date:
     
     # try:
     # print(f"[LOADER-ATTEMPT] Trying yfinance for {ticker}...")
-    data = yf.download(ticker, start=start_date, progress=False, timeout=15, auto_adjust=False)
+    data = yf.download(ticker, start=start_date, progress=False, timeout=15, auto_adjust=True)
     if not data.empty:
         # print(f"[LOADER-SUCCESS] yfinance returned data for {ticker} with shape {data.shape}")
         # print(f"[LOADER-DEBUG] yfinance columns: {data.columns.tolist()}")
