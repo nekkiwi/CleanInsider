@@ -1,11 +1,74 @@
 # file: src/scrapers/data_loader.py
 
+import os
+import time
+import random
+import threading
 import pandas as pd
 from pathlib import Path
 import yfinance as yf
 from functools import lru_cache
 
 FINAL_COLS = ['Open', 'High', 'Low', 'Close', 'Volume']
+
+# Limit concurrent outbound requests to yfinance to reduce 429s while keeping speed
+_YF_MAX_CONCURRENCY = int(os.getenv("CLEANINSIDER_YF_MAX_CONCURRENCY", "6"))
+_YF_SEMAPHORE = threading.Semaphore(_YF_MAX_CONCURRENCY)
+
+
+def _sleep_with_jitter(base_seconds: float) -> None:
+    time.sleep(base_seconds + random.uniform(0, base_seconds * 0.3))
+
+
+def _yf_download_with_backoff(ticker: str, start=None, end=None, auto_adjust: bool = True,
+                              max_retries: int = 4, base_delay: float = 1.0, max_delay: float = 8.0):
+    """
+    yfinance download with bounded concurrency and exponential backoff + jitter.
+    Returns a (possibly empty) DataFrame.
+    """
+    delay = base_delay
+    for attempt in range(1, max_retries + 1):
+        _YF_SEMAPHORE.acquire()
+        try:
+            df = yf.download(
+                ticker,
+                start=start,
+                end=end,
+                progress=False,
+                timeout=30,
+                auto_adjust=auto_adjust,
+            )
+        except Exception as e:
+            # Detect common rate-limit signals; otherwise, don't spin on fatal errors
+            msg = str(e).lower()
+            should_retry = any(s in msg for s in [
+                'rate limit', 'too many requests', '429', 'read timed out', 'temporarily unavailable'
+            ])
+            if attempt < max_retries and should_retry:
+                _YF_SEMAPHORE.release()
+                _sleep_with_jitter(delay)
+                delay = min(max_delay, delay * 2)
+                continue
+            _YF_SEMAPHORE.release()
+            return pd.DataFrame()
+        finally:
+            # Ensure semaphore is released if no continue path above
+            if _YF_SEMAPHORE._value < _YF_MAX_CONCURRENCY:
+                try:
+                    _YF_SEMAPHORE.release()
+                except ValueError:
+                    # Already released via continue branch
+                    pass
+
+        if not df.empty:
+            return df
+
+        # Empty result could be rate limiting or truly no data; retry a few times
+        if attempt < max_retries:
+            _sleep_with_jitter(delay)
+            delay = min(max_delay, delay * 2)
+
+    return pd.DataFrame()
 
 def read_csv_safe(filepath):
     """Safely read CSV files, handling empty/corrupted files gracefully."""
@@ -161,7 +224,12 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
     return df_final.sort_index()
 
 @lru_cache(maxsize=None)
-def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date: pd.Timestamp = None) -> pd.DataFrame:
+def load_ohlcv_with_fallback(
+    ticker: str,
+    db_path_str: str,
+    required_start_date: pd.Timestamp = None,
+    required_end_date: pd.Timestamp = None,
+) -> pd.DataFrame:
     """
     Robustly loads OHLCV data by trying yfinance first, then falling back to local files.
     """
@@ -170,21 +238,31 @@ def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date:
     # print(f"[LOADER-INFO] Database path: {db_path_str}")
     
     # --- Step 1: Try yfinance as the primary, preferred source ---
-    # Calculate start date with some buffer
+    # Calculate request window with small buffer
     start_date = required_start_date
     if start_date is not None:
-        start_date = start_date - pd.Timedelta(days=30)  # Add some buffer
-        # print(f"[LOADER-INFO] Using buffered start date for yfinance: {start_date.date()}")
-    
-    # try:
-    # print(f"[LOADER-ATTEMPT] Trying yfinance for {ticker}...")
-    data = yf.download(ticker, start=start_date, progress=False, timeout=15, auto_adjust=True)
+        start_date = start_date - pd.Timedelta(days=30)  # start buffer
+    end_date = required_end_date
+    if end_date is not None:
+        end_date = min(pd.to_datetime(end_date), pd.Timestamp.today().normalize() + pd.Timedelta(days=1))
+
+    data = _yf_download_with_backoff(
+        ticker,
+        start=start_date,
+        end=end_date,
+        auto_adjust=True,
+        max_retries=4,
+        base_delay=1.0,
+        max_delay=8.0,
+    )
     if not data.empty:
-        # print(f"[LOADER-SUCCESS] yfinance returned data for {ticker} with shape {data.shape}")
-        # print(f"[LOADER-DEBUG] yfinance columns: {data.columns.tolist()}")
         cleaned_df = _standardize_and_clean(data, ticker, source="yfinance")
-        if not cleaned_df.empty and len(cleaned_df) > 10:  # Ensure we have reasonable amount of data
-            # print(f"[LOADER-FINAL] Using yfinance data for {ticker} - {len(cleaned_df)} rows")
+        if not cleaned_df.empty and len(cleaned_df) > 10:
+            # Trim to exact requested window if provided
+            if required_start_date is not None or required_end_date is not None:
+                left = required_start_date if required_start_date is not None else cleaned_df.index.min()
+                right = required_end_date if required_end_date is not None else cleaned_df.index.max()
+                cleaned_df = cleaned_df.loc[left:right]
             return cleaned_df
         # else:
             # print(f"[LOADER-WARN] yfinance data for {ticker} failed cleaning or too short ({len(cleaned_df)} rows)")
@@ -217,7 +295,11 @@ def load_ohlcv_with_fallback(ticker: str, db_path_str: str, required_start_date:
         if not local_data.empty:
             cleaned_local = _standardize_and_clean(local_data, ticker, source="local_file")
             if not cleaned_local.empty:
-                # print(f"[LOADER-FINAL] Using local data for {ticker} - {len(cleaned_local)} rows")
+                # Slice to requested window if specified
+                if required_start_date is not None or required_end_date is not None:
+                    left = required_start_date if required_start_date is not None else cleaned_local.index.min()
+                    right = required_end_date if required_end_date is not None else cleaned_local.index.max()
+                    cleaned_local = cleaned_local.loc[left:right]
                 return cleaned_local
                 # else:
                     # print(f"[LOADER-WARN] Local data for {ticker} failed cleaning")

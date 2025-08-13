@@ -8,6 +8,7 @@ import yfinance as yf
 import warnings
 
 from src import config as project_config
+from src.scrapers.feature_scraper.build_event_ohlcv import _build_future_windows_for_ticker
 
 
 SPX_TICKER_LOCAL = '^spx'
@@ -307,7 +308,16 @@ def calculate_master_targets(config, target_combinations: list, batch_size: int 
                     alpha_values.append(np.nan)
                     continue
                 # Past history for ticker
-                past_hist = past_batch[past_batch['Ticker'] == tkr][['Date','High','Low','Close','Volume']]
+                # Slice past history to [fdate - 1y, fdate] to avoid unnecessary data
+                past_hist_all = past_batch[past_batch['Ticker'] == tkr][['Date','High','Low','Close','Volume']]
+                if not past_hist_all.empty:
+                    past_hist_all = past_hist_all.sort_values('Date')
+                    left = pd.to_datetime(fdate) - pd.Timedelta(days=365)
+                    right = pd.to_datetime(fdate)
+                    mask = (past_hist_all['Date'] >= left) & (past_hist_all['Date'] <= right)
+                    past_hist = past_hist_all.loc[mask]
+                else:
+                    past_hist = past_hist_all
                 # Derive lookahead trading days from the timepoint string (e.g., '1w','2m','10d')
                 tp_str = str(timepoint).lower()
                 try:

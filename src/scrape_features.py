@@ -5,7 +5,6 @@ from pathlib import Path
 import time
 from src.scrapers.feature_scraper.scrape_openinsider import scrape_openinsider
 from src.scrapers.feature_scraper.load_technical_indicators import generate_technical_indicators
-from src.scrapers.feature_scraper.load_macro_features import generate_macro_features
 from src.scrapers.feature_scraper.load_annual_statements import generate_annual_statements
 from src.scrapers.feature_scraper.build_event_ohlcv import build_event_ohlcv_datasets
 
@@ -50,7 +49,6 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     generate_annual_statements(base_df, annual_path, sec_parquet_dir=config.EDGAR_DOWNLOAD_PATH, request_header=config.REQUESTS_HEADER)
     # Technicals now read from ohlcv_past component to avoid lookahead
     generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
-    generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
 
     # --- Step 5: Merge all feature components ---
     print("\n--- Step 5: Merging all feature components ---")
@@ -58,11 +56,9 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     # Load primary components
     base_df = pd.read_parquet(base_path)
     annual_df = pd.read_parquet(annual_path)
-    macro_df = pd.read_parquet(macro_path)
 
     # Convert date columns for merging
     annual_df['Filing Date'] = pd.to_datetime(annual_df['Filing Date'])
-    macro_df['Filing Date'] = pd.to_datetime(macro_df['Filing Date'])
 
     # Defensively handle empty annual statements
     if annual_df.empty:
@@ -83,9 +79,6 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     else:
         print("  [WARN] Technical indicators file not found. Skipping merge.")
     # --- END OF FIX ---
-
-    merged_df = pd.merge(merged_df, macro_df, on="Filing Date", how="left")
-    print(f"  Rows after merging all components: {len(merged_df)}")
 
     # --- Step 6: Save the final raw feature set ---
     raw_features_path = Path(config.FEATURES_OUTPUT_PATH) / "raw_features.parquet"

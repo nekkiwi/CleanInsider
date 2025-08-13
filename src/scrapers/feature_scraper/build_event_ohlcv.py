@@ -24,8 +24,16 @@ def _load_ticker_history_for_events(
         return ticker, pd.DataFrame()
 
     min_event_date: pd.Timestamp = min(filing_dates)
+    max_event_date: pd.Timestamp = max(filing_dates)
     required_start = pd.to_datetime(min_event_date) - pd.Timedelta(days=past_lookback_calendar_days)
-    df = load_ohlcv_with_fallback(ticker, db_path_str, required_start_date=required_start)
+    # Request only until 6 months after the latest filing for this ticker
+    required_end = pd.to_datetime(max_event_date) + pd.Timedelta(days=190)
+    df = load_ohlcv_with_fallback(
+        ticker,
+        db_path_str,
+        required_start_date=required_start,
+        required_end_date=required_end,
+    )
     return ticker, df
 
 

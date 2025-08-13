@@ -90,6 +90,10 @@ class ModelTrainer:
     def _train_models(self, X_tr, y_bin_tr, y_cont_tr, seed):
         """Trains classifier and regressor models."""
         params = {'random_state': seed, 'n_jobs': -1, 'verbosity': -1, 'subsample': 0.8, 'colsample_bytree': 0.8}
+        params.update({'num_leaves':10,
+                       'min_child_samples':100,
+                       'reg_alpha':0.5,
+                       'reg_lambda':0.5})
         classifier, regressor = LGBMClassifier(**params), LGBMRegressor(**params)
         classifier.fit(X_tr, y_bin_tr)
         pos_idx = y_bin_tr[y_bin_tr == 1].index
