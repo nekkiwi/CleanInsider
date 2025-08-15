@@ -22,8 +22,8 @@ class BotArgs:
     tp: float
     sl: float
     threshold_pct: int
-    lookback_days: int = 2
-    gate: float = 0.6
+    lookback_days: int
+    gate: float
 
 
 def _get_strategy_tuple(timepoint: str, tp: float, sl: float) -> Tuple[str, float, float]:

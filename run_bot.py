@@ -11,7 +11,7 @@ from src.alpaca.trading import execute_trades
 from src.alpaca.logging import log_to_google_sheets
 
 
-def run_once(timepoint: str, tp: float, sl: float, threshold_pct: int, lookback_days: int = 2, min_signal_gate_threshold: float = 0.6):
+def run_once(timepoint: str, tp: float, sl: float, threshold_pct: int, lookback_days: int, min_signal_gate_threshold: float):
     args = BotArgs(timepoint=timepoint, tp=tp, sl=sl, threshold_pct=threshold_pct, lookback_days=lookback_days, gate=min_signal_gate_threshold)
     df = run_live_bot_once(args)
     if df is None:
@@ -37,7 +37,10 @@ def main():
     parser.add_argument('--threshold_pct', type=int, required=True, help='Label threshold percent (0,1,2,...)')
     args = parser.parse_args()
 
-    df = run_once(args.timepoint, args.tp, args.sl, args.threshold_pct, lookback_days=1, min_signal_gate_threshold=0.5)
+    lookback_days = 2
+    min_signal_gate_threshold = 0.5
+
+    df = run_once(args.timepoint, args.tp, args.sl, args.threshold_pct, lookback_days, min_signal_gate_threshold)
     outdir = Path('results') / 'bot'
     outdir.mkdir(parents=True, exist_ok=True)
     if df is not None and not df.empty:
