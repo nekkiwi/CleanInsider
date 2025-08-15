@@ -49,34 +49,9 @@ jobs:
 
       - name: Download models from Google Drive
         env:
-          GOOGLE_CREDS: ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
+          GOOGLE_SHEET_CREDS_JSON: ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
-          # Create rclone config file with service account credentials
-          mkdir -p ~/.config/rclone
-          
-          # Write the service account credentials to a file
-          echo "$GOOGLE_CREDS" > /tmp/service_account.json
-          
-          # Debug: Check if JSON is valid
-          echo "JSON file size: $(wc -c < /tmp/service_account.json)"
-          echo "JSON starts with: $(head -c 50 /tmp/service_account.json)"
-          echo "JSON ends with: $(tail -c 50 /tmp/service_account.json)"
-          
-          # Validate JSON syntax
-          if ! python3 -m json.tool /tmp/service_account.json > /dev/null; then
-            echo "ERROR: Invalid JSON in service account credentials"
-            exit 1
-          fi
-          
-          # Create rclone config using the credentials file
-          cat > ~/.config/rclone/rclone.conf << EOF
-          [gdrive]
-          type = drive
-          scope = drive.readonly
-          service_account_file = /tmp/service_account.json
-          root_folder_id = $GDRIVE_FOLDER_ID
-          EOF
           # Set default parameters or use workflow_dispatch inputs
           TIMEPOINT='1w'
           TP='0.10'
@@ -95,6 +70,19 @@ jobs:
           SUBFOLDER_NAME="LightGBM_alpha_${TIMEPOINT}_${TP_CLEAN}_${SL_CLEAN}_${THRESHOLD_PCT}pct"
           echo "Downloading models for: ${SUBFOLDER_NAME}"
 
+          # Create service account JSON file
+          echo "$GOOGLE_SHEET_CREDS_JSON" > /tmp/service_account.json
+          
+          # Create rclone config
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf << EOF
+          [gdrive]
+          type = drive
+          scope = drive.readonly
+          service_account_file = /tmp/service_account.json
+          root_folder_id = $GDRIVE_FOLDER_ID
+          EOF
+
           # Create the local target directories
           mkdir -p "data/models"
           mkdir -p "data/scrapers/features/preprocessing"
@@ -107,7 +95,7 @@ jobs:
           
           echo "Model download complete."
           echo "Downloaded files:"
-          find data/models/${SUBFOLDER_NAME} -type f | head -10
+          find data/models -type f | head -10
           find data/scrapers/features/preprocessing -type f | head -5
 
       - name: Configure environment
@@ -116,8 +104,6 @@ jobs:
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           GOOGLE_SHEET_CREDS_JSON: ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_SHEET_GID: ${{ secrets.GOOGLE_SHEET_GID }}
         run: |
           echo "ALPACA_API_KEY set: ${#ALPACA_API_KEY} chars"
           echo "Google creds present: ${{ env.GOOGLE_SHEET_CREDS_JSON != '' }}"
