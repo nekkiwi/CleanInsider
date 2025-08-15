@@ -66,7 +66,7 @@ jobs:
             THRESHOLD='${{ inputs.threshold }}'
           fi
           echo "Args: $TIMEPOINT $TP $SL thr=$THRESHOLD"
-          python run_bot.py --timepoint "$TIMEPOINT" --tp "$TP" --sl "$SL" --threshold_pct "$THRESHOLD" --lookback_days 2 --gate 0.6
+          python run_bot.py --timepoint "$TIMEPOINT" --tp "$TP" --sl "$SL" --threshold_pct "$THRESHOLD"
 
       - name: Upload signals
         uses: actions/upload-artifact@v4
