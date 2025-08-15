@@ -43,12 +43,58 @@ jobs:
           pip install -r requirements.txt
           pip install alpaca-trade-api==3.2.0 --no-deps
 
+      - name: Install rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Download models from Google Drive
+        env:
+          # This configures rclone to access Google Drive using your service account
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.readonly
+          RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
+        run: |
+          # Set default parameters or use workflow_dispatch inputs
+          TIMEPOINT='1w'
+          TP='0.10'
+          SL='-0.10'
+          THRESHOLD_PCT='1'
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TIMEPOINT='${{ inputs.timepoint }}'
+            TP='${{ inputs.tp }}'
+            SL='${{ inputs.sl }}'
+            THRESHOLD_PCT='${{ inputs.threshold }}'
+          fi
+          
+          # Construct the subfolder name from the parameters
+          TP_CLEAN=$(echo "$TP" | sed 's/\.//g' | sed 's/^/TP/' | sed 's/-//')
+          SL_CLEAN=$(echo "$SL" | sed 's/\.//g' | sed 's/^/SL/')
+          SUBFOLDER_NAME="LightGBM_alpha_${TIMEPOINT}_${TP_CLEAN}_${SL_CLEAN}_${THRESHOLD_PCT}pct"
+          echo "Downloading models for: ${SUBFOLDER_NAME}"
+
+          # Create the local target directories
+          mkdir -p "data/models"
+          mkdir -p "data/scrapers/features/preprocessing"
+
+          # Download models from the subfolder (preserves seed directory structure)
+          rclone copy "gdrive,root_folder_id=${{ secrets.GDRIVE_FOLDER_ID }}:${SUBFOLDER_NAME}/models/" "data/models/" --progress
+          
+          # Download preprocessing artifacts directly (no subdirectories)
+          rclone copy "gdrive,root_folder_id=${{ secrets.GDRIVE_FOLDER_ID }}:${SUBFOLDER_NAME}/preprocessing/" "data/scrapers/features/preprocessing/" --progress
+          
+          echo "Model download complete."
+          echo "Downloaded files:"
+          find data/models/${SUBFOLDER_NAME} -type f | head -10
+          find data/scrapers/features/preprocessing -type f | head -5
+
       - name: Configure environment
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           GOOGLE_SHEET_CREDS_JSON: ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_GID: ${{ secrets.GOOGLE_SHEET_GID }}
         run: |
           echo "ALPACA_API_KEY set: ${#ALPACA_API_KEY} chars"
           echo "Google creds present: ${{ env.GOOGLE_SHEET_CREDS_JSON != '' }}"

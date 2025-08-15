@@ -112,3 +112,8 @@ dmypy.json
 # IDE settings
 .idea/
 .vscode/
+
+# Environment variables (secrets)
+.env
+.env.local
+.env.*.local

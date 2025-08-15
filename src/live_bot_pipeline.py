@@ -31,7 +31,11 @@ def _get_strategy_tuple(timepoint: str, tp: float, sl: float) -> Tuple[str, floa
 
 
 def _load_deploy_processor(num_folds: int) -> FoldProcessor:
-    artifacts_dir = cfg.FEATURES_OUTPUT_PATH / 'preprocessing' / f'fold_{num_folds}'
+    # Try direct preprocessing directory first (for deployed models)
+    artifacts_dir = cfg.FEATURES_OUTPUT_PATH / 'preprocessing'
+    if not artifacts_dir.exists() or not (artifacts_dir / 'scaler.pkl').exists():
+        # Fallback to fold-specific directory for local development
+        artifacts_dir = cfg.FEATURES_OUTPUT_PATH / 'preprocessing' / f'fold_{num_folds}'
     scaler, outlier_bounds, imputation_values, columns_info = load_preprocessing_artifacts(artifacts_dir)
     proc = FoldProcessor()
     proc.scaler = scaler

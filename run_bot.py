@@ -5,6 +5,10 @@ import os
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from src.live_bot_pipeline import BotArgs, run_live_bot_once
 from src.alpaca.trading import execute_trades
