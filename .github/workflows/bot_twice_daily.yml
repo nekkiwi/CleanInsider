@@ -48,15 +48,23 @@ jobs:
           curl https://rclone.org/install.sh | sudo bash
 
       - name: Download models from Google Drive
+        env:
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           # Create rclone config file with service account credentials
           mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf << 'EOF'
+          
+          # Write the service account credentials to a file
+          echo "$GOOGLE_CREDS" > /tmp/service_account.json
+          
+          # Create rclone config using the credentials file
+          cat > ~/.config/rclone/rclone.conf << EOF
           [gdrive]
           type = drive
           scope = drive.readonly
-          service_account_credentials = ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
-          root_folder_id = ${{ secrets.GDRIVE_FOLDER_ID }}
+          service_account_file = /tmp/service_account.json
+          root_folder_id = $GDRIVE_FOLDER_ID
           EOF
           # Set default parameters or use workflow_dispatch inputs
           TIMEPOINT='1w'
