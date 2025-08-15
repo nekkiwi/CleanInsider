@@ -48,12 +48,16 @@ jobs:
           curl https://rclone.org/install.sh | sudo bash
 
       - name: Download models from Google Drive
-        env:
-          # This configures rclone to access Google Drive using your service account
-          RCLONE_CONFIG_GDRIVE_TYPE: drive
-          RCLONE_CONFIG_GDRIVE_SCOPE: drive.readonly
-          RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
         run: |
+          # Create rclone config file with service account credentials
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf << 'EOF'
+          [gdrive]
+          type = drive
+          scope = drive.readonly
+          service_account_credentials = ${{ secrets.GOOGLE_SHEET_CREDS_JSON }}
+          root_folder_id = ${{ secrets.GDRIVE_FOLDER_ID }}
+          EOF
           # Set default parameters or use workflow_dispatch inputs
           TIMEPOINT='1w'
           TP='0.10'
@@ -77,10 +81,10 @@ jobs:
           mkdir -p "data/scrapers/features/preprocessing"
 
           # Download models from the subfolder (preserves seed directory structure)
-          rclone copy "gdrive,root_folder_id=${{ secrets.GDRIVE_FOLDER_ID }}:${SUBFOLDER_NAME}/models/" "data/models/" --progress
+          rclone copy "gdrive:${SUBFOLDER_NAME}/models/" "data/models/" --progress
           
           # Download preprocessing artifacts directly (no subdirectories)
-          rclone copy "gdrive,root_folder_id=${{ secrets.GDRIVE_FOLDER_ID }}:${SUBFOLDER_NAME}/preprocessing/" "data/scrapers/features/preprocessing/" --progress
+          rclone copy "gdrive:${SUBFOLDER_NAME}/preprocessing/" "data/scrapers/features/preprocessing/" --progress
           
           echo "Model download complete."
           echo "Downloaded files:"
