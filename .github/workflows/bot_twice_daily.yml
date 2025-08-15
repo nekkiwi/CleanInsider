@@ -58,6 +58,17 @@ jobs:
           # Write the service account credentials to a file
           echo "$GOOGLE_CREDS" > /tmp/service_account.json
           
+          # Debug: Check if JSON is valid
+          echo "JSON file size: $(wc -c < /tmp/service_account.json)"
+          echo "JSON starts with: $(head -c 50 /tmp/service_account.json)"
+          echo "JSON ends with: $(tail -c 50 /tmp/service_account.json)"
+          
+          # Validate JSON syntax
+          if ! python3 -m json.tool /tmp/service_account.json > /dev/null; then
+            echo "ERROR: Invalid JSON in service account credentials"
+            exit 1
+          fi
+          
           # Create rclone config using the credentials file
           cat > ~/.config/rclone/rclone.conf << EOF
           [gdrive]
