@@ -34,6 +34,87 @@ def adjusted_sharpe_ratio(sharpe: float, num_signals: int, target_signals: int =
     if pd.isna(sharpe) or num_signals <= 0: return 0.0
     return sharpe * min(1.0, np.sqrt(num_signals / target_signals))
 
+def sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
+    """Calculates the annualized Sortino ratio."""
+    if returns.std() == 0 or len(returns) < 2:
+        return np.nan
+    rf_day = risk_free_rate / 252
+    downside = returns[returns < rf_day] - rf_day
+    if downside.empty:
+        return np.nan
+    downside_dev = np.sqrt(np.mean(np.square(downside)))
+    if downside_dev == 0:
+        return np.nan
+    excess = returns.mean() - rf_day
+    return (excess / downside_dev) * np.sqrt(252)
+
+def max_drawdown(returns: pd.Series) -> float:
+    """Computes max drawdown from a returns series."""
+    if returns.empty:
+        return np.nan
+    equity = (1.0 + returns.fillna(0.0)).cumprod()
+    peak = equity.cummax()
+    drawdown = equity / peak - 1.0
+    return float(drawdown.min())
+
+def evaluate_classifier_only(classifier, X_eval, y_bin_eval, y_cont_eval,
+                             use_min_signal_gate: bool = False,
+                             signal_prob_threshold: float = 0.5):
+    """
+    Evaluate classifier-only metrics without a regressor.
+    Returns Sharpe and Adj Sharpe for classifier-selected trades, and MCC.
+    """
+    if X_eval.empty:
+        return None
+    if use_min_signal_gate and hasattr(classifier, 'predict_proba'):
+        try:
+            proba = classifier.predict_proba(X_eval)[:, 1]
+            buy_signals = (proba >= signal_prob_threshold).astype(int)
+        except Exception:
+            buy_signals = classifier.predict(X_eval)
+    else:
+        buy_signals = classifier.predict(X_eval)
+    if buy_signals.sum() == 0:
+        return None
+    sel_idx = X_eval.index[buy_signals == 1]
+    classifier_returns = y_cont_eval.loc[sel_idx]
+    sharpe_classifier = annualize_sharpe_ratio(classifier_returns)
+    adj_sharpe_classifier = adjusted_sharpe_ratio(sharpe_classifier, len(classifier_returns))
+    sortino_cls = sortino_ratio(classifier_returns)
+    mdd_cls = max_drawdown(classifier_returns)
+
+    gt_hits_idx = X_eval.index[y_bin_eval == 1]
+    pval_classifier = hypergeometric_pvalue(gt_hits_idx, sel_idx, len(X_eval))
+
+    if not gt_hits_idx.empty:
+        gt_returns = y_cont_eval.loc[gt_hits_idx]
+        sharpe_gt = annualize_sharpe_ratio(gt_returns)
+        adj_sharpe_gt = adjusted_sharpe_ratio(sharpe_gt, len(gt_returns))
+        sortino_gt = sortino_ratio(gt_returns)
+        mdd_gt = max_drawdown(gt_returns)
+        num_signals_gt = int(len(gt_returns))
+    else:
+        sharpe_gt = np.nan
+        adj_sharpe_gt = np.nan
+        sortino_gt = np.nan
+        mdd_gt = np.nan
+        num_signals_gt = 0
+
+    return {
+        'Sharpe (Classifier)': sharpe_classifier,
+        'Adj Sharpe (Classifier)': adj_sharpe_classifier,
+        'Sortino (Classifier)': sortino_cls,
+        'Max Drawdown (Classifier)': mdd_cls,
+        'MCC (Classifier)': matthews_corrcoef(y_bin_eval, buy_signals),
+        'GT-vs-Classifier p-value': pval_classifier,
+        'Num Signals (Classifier)': int(len(classifier_returns)),
+        'Sharpe (Ground Truth)': sharpe_gt,
+        'Adj Sharpe (Ground Truth)': adj_sharpe_gt,
+        'Sortino (Ground Truth)': sortino_gt,
+        'Max Drawdown (Ground Truth)': mdd_gt,
+        'Num Signals (Ground Truth)': num_signals_gt,
+    }
+
 def calculate_position_sizes(predicted_returns: pd.Series, min_size: float = 0.25, max_size: float = 1.0) -> pd.Series:
     """
     Scales regressor outputs to a position size between min_size and max_size.
@@ -75,7 +156,7 @@ def hypergeometric_pvalue(gt_hits_idx, selected_idx, population_size):
     pval = rv.sf(n_overlap - 1)  # sf is 1-cdf, so this is P(X >= n_overlap)
     return pval
 
-def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval):
+def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval, use_min_signal_gate: bool = False, signal_prob_threshold: float = 0.5):
     """
     Evaluates a model using fractional sizing based on the regressor's output.
     NOTE: The 'optimal_threshold' parameter has been removed.
@@ -83,7 +164,14 @@ def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval):
     if X_eval.empty or regressor is None: return None
     
     # STAGE 1: Get all buy signals from the classifier (the "gatekeeper")
-    buy_signals = classifier.predict(X_eval)
+    if use_min_signal_gate and hasattr(classifier, 'predict_proba'):
+        try:
+            proba = classifier.predict_proba(X_eval)[:, 1]
+            buy_signals = (proba >= signal_prob_threshold).astype(int)
+        except Exception:
+            buy_signals = classifier.predict(X_eval)
+    else:
+        buy_signals = classifier.predict(X_eval)
     if buy_signals.sum() == 0: return None
     
     pos_class_idx = X_eval.index[buy_signals == 1]
@@ -106,6 +194,8 @@ def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval):
     # Standard metrics are now calculated on the weighted portfolio returns
     sharpe_final_net = annualize_sharpe_ratio(final_returns_net)
     adj_sharpe_final_net = adjusted_sharpe_ratio(sharpe_final_net, len(final_returns_net))
+    sortino_final_net = sortino_ratio(final_returns_net)
+    mdd_final_net = max_drawdown(final_returns_net)
 
     # Calculate Information Coefficient (IC)
     # Use actual_returns BEFORE costs to measure pure prediction skill
@@ -128,9 +218,13 @@ def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval):
         classifier_returns = y_cont_eval.loc[X_eval.index[buy_signals == 1]]
         sharpe_classifier = annualize_sharpe_ratio(classifier_returns)
         adj_sharpe_classifier = adjusted_sharpe_ratio(sharpe_classifier, len(classifier_returns))
+        sortino_classifier = sortino_ratio(classifier_returns)
+        mdd_classifier = max_drawdown(classifier_returns)
     else:
         sharpe_classifier = np.nan
         adj_sharpe_classifier = np.nan
+        sortino_classifier = np.nan
+        mdd_classifier = np.nan
 
     # Hypergeometric p-value for ground truth hits vs classifier hits
     gt_hits_idx = X_eval.index[y_bin_eval == 1]
@@ -140,6 +234,20 @@ def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval):
     # --- MEDIAN RETURN METRICS ---
     # Median return for all potential trades identified by the binary target
     median_alpha_gt = y_cont_eval.loc[gt_hits_idx].median() if not gt_hits_idx.empty else np.nan
+    # Ground truth metrics
+    if not gt_hits_idx.empty:
+        gt_returns = y_cont_eval.loc[gt_hits_idx]
+        sharpe_gt = annualize_sharpe_ratio(gt_returns)
+        adj_sharpe_gt = adjusted_sharpe_ratio(sharpe_gt, len(gt_returns))
+        sortino_gt = sortino_ratio(gt_returns)
+        mdd_gt = max_drawdown(gt_returns)
+        num_signals_gt = int(len(gt_returns))
+    else:
+        sharpe_gt = np.nan
+        adj_sharpe_gt = np.nan
+        sortino_gt = np.nan
+        mdd_gt = np.nan
+        num_signals_gt = 0
     
     # Median return for all trades selected by the classifier
     median_alpha_classifier = y_cont_eval.loc[classifier_hits_idx].median() if not classifier_hits_idx.empty else np.nan
@@ -150,11 +258,15 @@ def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval):
     return {
         'Adj Sharpe (Net)': adj_sharpe_final_net,
         'Sharpe (Net)': sharpe_final_net,
+        'Sortino (Net)': sortino_final_net,
+        'Max Drawdown (Net)': mdd_final_net,
         'Num Signals (Final)': len(final_returns_net),
         # No explicit trading cost modeling; targets are already spread-adjusted
         'MCC (Classifier)': matthews_corrcoef(y_bin_eval, buy_signals),
         'Sharpe (Classifier)': sharpe_classifier,
         'Adj Sharpe (Classifier)': adj_sharpe_classifier,
+        'Sortino (Classifier)': sortino_classifier,
+        'Max Drawdown (Classifier)': mdd_classifier,
         'GT-vs-Classifier p-value': pval_classifier,
         'Information Coefficient': ic,
         'Avg Position Size': avg_position_size,
@@ -162,6 +274,11 @@ def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval):
         'Median Alpha (Ground Truth)': median_alpha_gt,
         'Median Alpha (Classifier)': median_alpha_classifier,
         'Median Alpha (Final Net)': median_alpha_final,
+        'Sharpe (Ground Truth)': sharpe_gt,
+        'Adj Sharpe (Ground Truth)': adj_sharpe_gt,
+        'Sortino (Ground Truth)': sortino_gt,
+        'Max Drawdown (Ground Truth)': mdd_gt,
+        'Num Signals (Ground Truth)': num_signals_gt,
     }
 
 def save_strategy_results(results_df: pd.DataFrame, stats_dir: Path, file_name_prefix: str):

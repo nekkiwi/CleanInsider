@@ -7,24 +7,11 @@ def main():
     print("--- Starting Walk-Forward Training Pipeline ---")
     start_time = time.time()
 
-    strategies = [('1w', 0.05, -0.05),]
-                #   ('1w', 0.05, -0.10),
-                #   ('1w', 0.10, -0.10),
-                #   ('1w', 0.10, -0.05),]
-
-                #   ('2w', 0.05, -0.05),
-                #   ('2w', 0.05, -0.10),
-                #   ('2w', 0.10, -0.10),
-                #   ('2w', 0.10, -0.05),  
-
-                #   ('1m', 0.05, -0.05),
-                #   ('1m', 0.05, -0.10),
-                #   ('1m', 0.10, -0.10),
-                #   ('1m', 0.10, -0.05)]
-
-    binary_thresholds_pct = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5]
+    strategies = [('1w', 0.10, -0.10),
+                  ('1w', 0.15, -0.10)]
+    binary_thresholds_pct = [0,0.5,1]
     model_type = "LightGBM"
-    top_n_features = 5
+    top_n_features = 10
     seeds = [42, 123, 2024, 456, 567]
     
     # This now correctly controls the number of walk-forward validation folds.
@@ -37,7 +24,7 @@ def main():
         binary_thresholds_pct=binary_thresholds_pct,
         model_type=model_type,
         top_n=top_n_features,
-        seeds=seeds
+        seeds=seeds,
     )
 
     end_time = time.time()

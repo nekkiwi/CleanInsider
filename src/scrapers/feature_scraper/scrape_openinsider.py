@@ -270,3 +270,78 @@ def scrape_openinsider(num_weeks: int, start_months_ago=None, end_months_ago: in
     print(df_final.head(3).to_string())
     
     return df_final
+
+
+def scrape_openinsider_date_range(start_date: pd.Timestamp | str, end_date: pd.Timestamp | str, request_header: dict | None = None) -> pd.DataFrame:
+    """
+    Scrape OpenInsider for an arbitrary calendar date range [start_date, end_date].
+    Returns a cleaned and aggregated DataFrame aligned with the training feature pipeline.
+    """
+    if request_header is None:
+        request_header = config.REQUESTS_HEADER
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+    if end_dt < start_dt:
+        end_dt = start_dt
+
+    # Build weekly ranges between start and end
+    date_ranges = []
+    cursor = start_dt
+    while cursor <= end_dt:
+        next_end = min(cursor + datetime.timedelta(days=7), end_dt)
+        date_ranges.append((cursor, next_end))
+        cursor = next_end + datetime.timedelta(days=1)
+
+    if not date_ranges:
+        date_ranges = [(start_dt, end_dt)]
+
+    tasks = [delayed(_scrape_date_range_worker)(dr, request_header) for dr in date_ranges]
+    results = Parallel(n_jobs=-2)(tqdm(tasks, desc="Scraping weekly data (custom range)"))
+    all_data_frames = [df for df in results if df is not None]
+    if not all_data_frames:
+        return pd.DataFrame()
+
+    df = pd.concat(all_data_frames, ignore_index=True)
+    df.columns = df.columns.str.replace("\xa0", " ", regex=False)
+    df = df.drop_duplicates()
+
+    # Cleaning steps (mirrors scrape_openinsider)
+    if "ΔOwn" in df.columns:
+        df.rename(columns={"ΔOwn": "dOwn"}, inplace=True)
+    df.dropna(subset=["Ticker"], inplace=True)
+    df["Filing Date"] = pd.to_datetime(df["Filing Date"], errors="coerce")
+    df["Trade Date"] = pd.to_datetime(df["Trade Date"], errors="coerce")
+    df.dropna(subset=["Filing Date", "Trade Date"], inplace=True)
+
+    for col in ["Price", "Qty", "Owned", "Value"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col].astype(str).replace({r"\$": "", ",": ""}, regex=True), errors="coerce")
+    if "dOwn" in df.columns:
+        df["dOwn"] = pd.to_numeric(df["dOwn"].astype(str).replace({r"%": "", r"\+": "", r"New": "999", r">": ""}, regex=True), errors="coerce")
+    else:
+        df["dOwn"] = np.nan
+
+    if "Trade Type" in df.columns:
+        df = df[df["Trade Type"].str.contains("P - Purchase", na=False)].copy()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    df["Days_Since_Trade"] = (df["Filing Date"] - df["Trade Date"]).dt.days
+    df = _parse_insider_titles(df)
+    df_agg = _aggregate_daily_trades(df)
+    df_final = add_date_features(df_agg)
+    if "Value" in df_final.columns:
+        df_final["log_Value"] = np.log1p(df_final["Value"].fillna(0))
+    if "Qty" in df_final.columns:
+        df_final["log_Qty"] = np.log1p(df_final["Qty"].fillna(0))
+    if "Price" in df_final.columns:
+        df_final["log_Price"] = np.log1p(df_final["Price"].fillna(0))
+
+    final_cols = [
+        "Ticker", "Filing Date", "Number_of_Purchases", "Price", "Qty", "Owned", "dOwn", "Value",
+        "Days_Since_Trade", "CEO", "CFO", "Pres", "VP", "Dir", "TenPercent",
+        "log_Value", "log_Qty", "log_Price", "Day_Of_Year", "Day_Of_Quarter"
+    ]
+    available_cols = [c for c in final_cols if c in df_final.columns]
+    return df_final.reindex(columns=available_cols)

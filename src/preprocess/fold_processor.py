@@ -213,4 +213,6 @@ class FoldProcessor:
         unscaled_numeric_cols = [col for col in df.select_dtypes(include=np.number).columns if col in self.COLS_TO_SKIP_SCALING]
         df[unscaled_numeric_cols] = df[unscaled_numeric_cols].fillna(self.imputation_values_for_unscaled)
         
-        return df[[c for c in self.final_columns if c in df.columns]]
+        # Return only final model feature columns; identifiers were used for preprocessing only
+        keep_cols = [c for c in self.final_columns if c in df.columns]
+        return df[keep_cols]
