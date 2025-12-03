@@ -34,6 +34,30 @@ from src.alpaca.position_sizer import PositionSizer
 from src.alpaca.google_drive import GoogleDriveClient
 
 
+def derive_strategy_from_model(model_id: str) -> tuple:
+    """
+    Derive strategy tuple from model ID.
+    
+    model_1w_tp5_sl5 -> ("1w", 0.05, -0.05)
+    model_2w_tp5_sl5 -> ("2w", 0.05, -0.05)
+    model_1m_tp5_sl5 -> ("1m", 0.05, -0.05)
+    """
+    # Map model names to strategies
+    mappings = {
+        "model_1w_tp5_sl5": ("1w", 0.05, -0.05),
+        "model_2w_tp5_sl5": ("2w", 0.05, -0.05),
+        "model_1m_tp5_sl5": ("1m", 0.05, -0.05),
+        "model_1w_tp10_sl5": ("1w", 0.10, -0.05),
+        "model_1w_tp10_sl10": ("1w", 0.10, -0.10),
+    }
+    
+    if model_id in mappings:
+        return mappings[model_id]
+    
+    # Default fallback
+    return config.DEFAULT_STRATEGY
+
+
 def download_models_from_drive(gdrive_client: GoogleDriveClient) -> bool:
     """Download models from Google Drive."""
     if not gdrive_client.is_connected():
@@ -291,8 +315,12 @@ def main():
     if gdrive_client.is_connected():
         download_models_from_drive(gdrive_client)
     
+    # Derive strategy from model_id
+    strategy = derive_strategy_from_model(model_id)
+    print(f"Using strategy: {strategy}")
+    
     # Initialize predictor and feature generator
-    predictor = EnsemblePredictor()
+    predictor = EnsemblePredictor(strategy=strategy)
     feature_generator = LiveFeatureGenerator()
     position_sizer = PositionSizer()
     
