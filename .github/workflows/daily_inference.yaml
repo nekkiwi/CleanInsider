@@ -1,9 +1,9 @@
 name: Daily Inference and Trading
 
 on:
-  # Run at 8:00 AM ET (13:00 UTC) on weekdays
+  # Run at 10:00 AM ET (15:00 UTC) on weekdays - after market opens
   schedule:
-    - cron: '0 13 * * 1-5'
+    - cron: '0 15 * * 1-5'
   
   # Allow manual trigger
   workflow_dispatch:

@@ -91,7 +91,7 @@ class GoogleDriveClient:
             
             self.drive_service = build("drive", "v3", credentials=credentials)
             self.sheets_service = build("sheets", "v4", credentials=credentials)
-            print("[INFO] Google Drive/Sheets client initialized")
+            print(f"[INFO] Google Drive/Sheets client initialized (sheet_id configured: {bool(self.log_sheet_id)})")
         except Exception as e:
             print(f"[ERROR] Failed to initialize Google client: {e}")
     
@@ -267,7 +267,7 @@ class GoogleDriveClient:
             True if successful
         """
         if not self.sheets_service or not self.log_sheet_id:
-            print("[WARN] Sheets not connected, skipping performance log")
+            print(f"[WARN] Sheets not connected (service={self.sheets_service is not None}, sheet_id={bool(self.log_sheet_id)})")
             return False
         
         try:

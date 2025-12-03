@@ -75,7 +75,7 @@ MAX_TOTAL_EXPOSURE = 0.50  # 50% max total invested
 MIN_POSITION_DOLLARS = 100
 
 # Maximum spread cost threshold (positions with higher costs are skipped)
-MAX_SPREAD_COST = 0.01  # 100 bps (1%)
+MAX_SPREAD_COST = 0.03  # 300 bps (3%) - higher threshold for small caps
 
 # Ensemble voting threshold (fraction of models that must agree)
 ENSEMBLE_VOTE_THRESHOLD = 0.5  # Majority vote
