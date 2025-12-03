@@ -390,12 +390,15 @@ class GoogleDriveClient:
         2. Nested: strategy/fold_X/seed_Y/
         """
         if not self.drive_service or not self.models_folder_id:
+            print(f"[DEBUG] drive_service={self.drive_service is not None}, folder_id={self.models_folder_id}")
             return 0
         
         local_path = local_models_path or config.MODELS_PATH
         local_path.mkdir(parents=True, exist_ok=True)
         
+        print(f"[DEBUG] Listing files in folder: {self.models_folder_id}")
         items = self.list_files(self.models_folder_id)
+        print(f"[DEBUG] Found {len(items)} items: {[i['name'] for i in items]}")
         downloaded = 0
         
         for item in items:
@@ -407,8 +410,10 @@ class GoogleDriveClient:
             
             if item["mimeType"] == "application/vnd.google-apps.folder":
                 # Check if this is a model folder with weights/preprocessing structure
+                print(f"[DEBUG] Checking folder: {item_name}")
                 sub_items = self.list_files(item["id"])
                 sub_names = [s["name"] for s in sub_items]
+                print(f"[DEBUG] Sub-items in {item_name}: {sub_names}")
                 
                 if "weights" in sub_names or "preprocessing" in sub_names:
                     # Flattened structure: model_xxx/weights/, model_xxx/preprocessing/
