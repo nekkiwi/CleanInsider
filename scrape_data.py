@@ -25,11 +25,9 @@ def main(num_weeks: int, target_only: bool):
         run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
 
         # 3. Run the preprocessing pipeline
-        # The start_date argument has been removed as it is no longer needed
-        # by the new version of the preprocessing script.
         run_preprocess_pipeline(
             config=config,
-            num_folds=num_folds, # This will generate 5 validation folds and 1 test set
+            num_folds=num_folds,
             corr_thresh=0.8,
             var_thresh=0.0001,
             missing_thresh=0.6

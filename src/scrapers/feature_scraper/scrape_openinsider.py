@@ -58,9 +58,6 @@ def _aggregate_daily_trades(df: pd.DataFrame) -> pd.DataFrame:
     df_agg["Number_of_Purchases"] = grouped.size()
     df_agg = df_agg.reset_index()
     
-    # print(f"[AGG-DEBUG] Output shape after aggregation: {df_agg.shape}")
-    # print(f"[AGG-DEBUG] Sample of aggregated data:")
-    print(df_agg.head(3).to_string())
     return df_agg
 
 def _scrape_date_range_worker(date_range: tuple, request_header: dict) -> pd.DataFrame | None:
@@ -250,9 +247,5 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
     df_final = df_final.reindex(columns=available_cols)
     
     print(f"\n[MAIN-SUCCESS] Final insider trading dataset: {df_final.shape[0]} rows, {df_final.shape[1]} columns")
-    # print(f"[MAIN-DEBUG] Date range: {df_final['Filing Date'].min().date()} to {df_final['Filing Date'].max().date()}")
-    # print(f"[MAIN-DEBUG] Unique tickers: {df_final['Ticker'].nunique()}")
-    # print(f"[MAIN-DEBUG] Sample of final data:")
-    print(df_final.head(3).to_string())
     
     return df_final

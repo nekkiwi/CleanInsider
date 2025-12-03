@@ -6,10 +6,11 @@ import itertools
 from pathlib import Path
 import joblib
 from lightgbm import LGBMClassifier, LGBMRegressor
+import numpy as np
 
 from .training.training_helpers import (
-    find_optimal_threshold, evaluate_fold, save_strategy_results,
-    select_features_for_fold, calculate_spread_cost
+    evaluate_fold, save_strategy_results,
+    select_features_for_fold
 )
 from .preprocess.utils import load_preprocessing_artifacts
 
@@ -25,39 +26,14 @@ class ModelTrainer:
         self.models_base_path.mkdir(parents=True, exist_ok=True)
         self.preprocessing_artifacts_path = self.features_base_path / "preprocessing"
         
-    def apply_inference_preprocessing(self, data_df, fold):
-        """Apply the same preprocessing pipeline used during training."""
-        from .preprocess.various_preprocessing import apply_additional_preprocessing
-        
-        # Load preprocessing artifacts for this fold
-        fold_artifacts_dir = self.preprocessing_artifacts_path / f"fold_{fold}"
-        scaler, outlier_bounds, imputation_values, columns_info = load_preprocessing_artifacts(fold_artifacts_dir)
-        
-        # Apply same preprocessing sequence as training:
-        # 1. Outlier clipping
-        processed_data, _ = apply_additional_preprocessing(data_df.copy(), outlier_bounds)
-        
-        # 2. Feature scaling (for columns that were scaled)
-        if scaler is not None and columns_info.get('columns_to_scale'):
-            scaled_cols = [col for col in columns_info['columns_to_scale'] if col in processed_data.columns]
-            if scaled_cols:
-                processed_data[scaled_cols] = scaler.transform(processed_data[scaled_cols].fillna(0))
-        
-        # 3. Imputation for unscaled columns
-        if imputation_values:
-            imputation_series = pd.Series(imputation_values)
-            unscaled_cols = [col for col in imputation_series.index if col in processed_data.columns]
-            if unscaled_cols:
-                processed_data[unscaled_cols] = processed_data[unscaled_cols].fillna(imputation_series[unscaled_cols])
-        
-        return processed_data
+    
         
     def _get_strategy_string(self, strategy):
         """Convert strategy tuple to folder-safe string."""
         timepoint, tp, sl = strategy
         return f"{timepoint}_tp{str(tp).replace('.', 'p')}_sl{str(sl).replace('.', 'p')}"
 
-    def _save_models(self, classifier, regressor, strategy, fold, seed, selected_features, imputation_values, optimal_threshold):
+    def _save_models(self, classifier, regressor, strategy, fold, seed, selected_features, imputation_values):
         """Save trained models and metadata to the specified directory structure."""
         strategy_str = self._get_strategy_string(strategy)
         
@@ -74,11 +50,10 @@ class ModelTrainer:
             regressor_path = model_dir / "regressor.pkl"
             joblib.dump(regressor, regressor_path)
         
-        # Save metadata (features, imputation values, threshold)
+        # Save metadata (features, imputation values)
         metadata = {
             'selected_features': selected_features,
             'imputation_values': imputation_values.to_dict(),
-            'optimal_threshold': optimal_threshold,
             'strategy': strategy,
             'fold': fold,
             'seed': seed
@@ -90,12 +65,38 @@ class ModelTrainer:
         return model_dir
 
     def _load_data_for_set(self, feature_path: Path, label_path: Path):
-        """Loads and merges a feature set with its corresponding labels."""
+        """Loads and merges a feature set with its corresponding labels and spread data."""
         if not feature_path.exists() or not label_path.exists(): return None
-        features_df, labels_df = pd.read_parquet(feature_path), pd.read_parquet(label_path)
+        
+        # Determine spread file name
+        if "training" in feature_path.name:
+            spread_filename = "training_spreads.parquet"
+        elif "validation" in feature_path.name:
+            spread_filename = "validation_spreads.parquet"
+        elif "test" in feature_path.name:
+            spread_filename = "test_spreads.parquet"
+        else:
+            spread_filename = None
+
+        features_df = pd.read_parquet(feature_path)
+        labels_df = pd.read_parquet(label_path)
+        
         features_df['Filing Date'] = pd.to_datetime(features_df['Filing Date'])
         labels_df['Filing Date'] = pd.to_datetime(labels_df['Filing Date'])
-        return pd.merge(features_df, labels_df, on=['Ticker', 'Filing Date'], how='inner')
+        
+        merged_df = pd.merge(features_df, labels_df, on=['Ticker', 'Filing Date'], how='inner')
+
+        if spread_filename:
+            spread_path = label_path.parent / spread_filename
+            if spread_path.exists():
+                spread_df = pd.read_parquet(spread_path)
+                spread_df['Filing Date'] = pd.to_datetime(spread_df['Filing Date'])
+                merged_df = pd.merge(merged_df, spread_df, on=['Ticker', 'Filing Date'], how='left')
+            else:
+                print(f"  [WARN] Spread file not found, but expected: {spread_path}")
+                merged_df['corwin_schultz_spread'] = np.nan
+        
+        return merged_df
 
     def _prepare_strategy_data(self, data_df, target_col, threshold_pct):
         """Prepares X and y dataframes for a specific strategy."""
@@ -146,31 +147,32 @@ class ModelTrainer:
                 X_val, y_bin_val, y_cont_val = self._prepare_strategy_data(val_df, target_col, bin_thresh)
                 if X_tr is None or X_val is None: continue
 
-                selected_features = select_features_for_fold(X_tr, y_bin_tr, top_n, seed)
+                # --- IMPUTATION & FEATURE SELECTION (Corrected Workflow) ---
+                # 1. Learn imputation values from the training set only
+                imputation_values = X_tr.median()
+                X_tr_imputed = X_tr.fillna(imputation_values)
+
+                # 2. Select features based on the properly imputed training data
+                selected_features = select_features_for_fold(X_tr_imputed, y_bin_tr, top_n, seed)
                 if not selected_features: continue
                 
-                imputation_values = X_tr[selected_features].median()
-                X_tr_sel = X_tr[selected_features].fillna(imputation_values)
-                X_val_sel = X_val[selected_features].fillna(imputation_values)
+                # 3. Create final model inputs with selected features
+                X_tr_sel = X_tr_imputed[selected_features]
+                X_val_sel = X_val[selected_features].fillna(imputation_values) # Apply same imputation to validation set
 
                 classifier, regressor = self._train_models(X_tr_sel, y_bin_tr, y_cont_tr, seed)
                 if regressor is None: continue
 
-                # --- EVALUATION 1: On this fold's specific validation set ---
-                costs_val = calculate_spread_cost(X_val)
-                val_buy_signals = classifier.predict(X_val_sel)
-                val_pos_idx = X_val_sel.index[val_buy_signals == 1]
+                # --- COST CALCULATION: Prioritize Corwin-Schultz, fallback to estimation ---
+                if 'corwin_schultz_spread' in val_df.columns:
+                    costs_val = val_df['corwin_schultz_spread'].reindex(X_val.index).fillna(0.0005)
+                else:
+                    print("[WARN] 'corwin_schultz_spread' not found in validation set. Defaulting to 5bps cost.")
+                    costs_val = pd.Series(0.0005, index=X_val.index)
                 
-                optimal_threshold = None  # Initialize for saving
-                
-                if not val_pos_idx.empty:
-                    val_pred_returns = pd.Series(regressor.predict(X_val_sel.loc[val_pos_idx]), index=val_pos_idx)
-                    opt_results = find_optimal_threshold(val_pred_returns, y_cont_val.loc[val_pos_idx], costs_val.loc[val_pos_idx])
-                    optimal_threshold = opt_results.get('optimal_threshold')
-                    
-                    val_metrics = evaluate_fold(classifier, regressor, optimal_threshold, X_val_sel, y_bin_val, y_cont_val, costs_val)
-                    if val_metrics:
-                        all_validation_results.append({'Timepoint': timepoint, 'TP': tp, 'SL': sl, 'Threshold': bin_thresh, 'Seed': seed, 'Fold': fold, **val_metrics})
+                val_metrics = evaluate_fold(classifier, regressor, X_val_sel, y_bin_val, y_cont_val, costs_val)
+                if val_metrics:
+                    all_validation_results.append({'Timepoint': timepoint, 'TP': tp, 'SL': sl, 'Threshold': bin_thresh, 'Seed': seed, 'Fold': fold, **val_metrics})
 
                 self._save_models(
                     classifier=classifier,
@@ -179,18 +181,23 @@ class ModelTrainer:
                     fold=fold,
                     seed=seed,
                     selected_features=selected_features,
-                    imputation_values=imputation_values,
-                    optimal_threshold=optimal_threshold
+                    imputation_values=imputation_values
                 )
 
                 # --- EVALUATION 2: On the single, static final test set ---
                 if test_df is not None:
                     X_test, y_bin_test, y_cont_test = self._prepare_strategy_data(test_df, target_col, bin_thresh)
                     if X_test is not None:
+                        # Apply the imputation learned from the training set
                         X_test_sel = X_test[selected_features].fillna(imputation_values)
-                        costs_test = calculate_spread_cost(X_test)
-                        # Use the optimal threshold found on THIS fold's validation set
-                        test_metrics = evaluate_fold(classifier, regressor, opt_results.get('optimal_threshold'), X_test_sel, y_bin_test, y_cont_test, costs_test)
+                        
+                        if 'corwin_schultz_spread' in test_df.columns:
+                            costs_test = test_df['corwin_schultz_spread'].reindex(X_test.index).fillna(0.0005)
+                        else:
+                            print("[WARN] 'corwin_schultz_spread' not found in test set. Defaulting to 5bps cost.")
+                            costs_test = pd.Series(0.0005, index=X_test.index)
+                            
+                        test_metrics = evaluate_fold(classifier, regressor, X_test_sel, y_bin_test, y_cont_test, costs_test)
                         if test_metrics:
                             all_test_results.append({'Timepoint': timepoint, 'TP': tp, 'SL': sl, 'Threshold': bin_thresh, 'Seed': seed, 'Fold': fold, **test_metrics})
 

@@ -9,14 +9,13 @@ def main():
 
     strategies = [
         ('1w', 0.05, -0.05),
-        ('1w', 0.05, -0.10),
         ('1w', 0.10, -0.10),
         ('1w', 0.10, -0.05),
         ('1w', 0.15, -0.05),
         ('1w', 0.15, -0.10)
     ]
 
-    binary_thresholds_pct = [2, 2.5, 3, 3.5, 4]
+    binary_thresholds_pct = [2]
     model_type = "LightGBM"
     top_n_features = 100
     seeds = [42, 123, 2024, 456, 567]

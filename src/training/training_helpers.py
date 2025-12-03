@@ -5,70 +5,19 @@ import numpy as np
 from pathlib import Path
 from sklearn.metrics import matthews_corrcoef
 from lightgbm import LGBMClassifier, LGBMRegressor
-from scipy.stats import hypergeom
+from scipy.stats import hypergeom, spearmanr
 
-def calculate_spread_cost(X_fold: pd.DataFrame) -> pd.Series:
-    """
-    Estimates per-trade transaction cost using your actual feature names.
-    """
-    # print(f"[COST-DEBUG] Input shape: {X_fold.shape}")
-    # print(f"[COST-DEBUG] Available columns: {[col for col in X_fold.columns if any(term in col for term in ['Assets', 'Equity', 'Income', 'Value', 'log_'])]}")
-    
-    cost_proxies = pd.DataFrame(index=X_fold.index)
 
-    # Use your actual feature names for cost estimation
-    if 'FIN_Total Assets_Y1' in X_fold.columns:
-        cost_proxies['size_inv'] = -1 * X_fold['FIN_Total Assets_Y1']
-        # print(f"[COST-DEBUG] Using FIN_Total Assets_Y1 for size proxy")
-    elif 'FIN_Total Assets_Y2' in X_fold.columns:
-        cost_proxies['size_inv'] = -1 * X_fold['FIN_Total Assets_Y2']
-        # print(f"[COST-DEBUG] Using FIN_Total Assets_Y2 for size proxy")
 
-    if 'FIN_Stockholders Equity_Y1' in X_fold.columns:
-        cost_proxies['value'] = X_fold['FIN_Stockholders Equity_Y1']
-        # print(f"[COST-DEBUG] Using FIN_Stockholders Equity_Y1 for value proxy")
-
-    if 'FIN_Net Income_Y1' in X_fold.columns:
-        cost_proxies['profitability'] = X_fold['FIN_Net Income_Y1']
-        # print(f"[COST-DEBUG] Using FIN_Net Income_Y1 for profitability proxy")
-    elif 'FIN_Net Income_Y2' in X_fold.columns:
-        cost_proxies['profitability'] = X_fold['FIN_Net Income_Y2']
-        # print(f"[COST-DEBUG] Using FIN_Net Income_Y2 for profitability proxy")
-
-    if 'log_Value' in X_fold.columns:
-        cost_proxies['trade_size'] = X_fold['log_Value']
-        # print(f"[COST-DEBUG] Using log_Value for trade size proxy")
-
-    if cost_proxies.empty:
-        print("[COST-WARN] No cost proxy features found. Using default 5bps cost.")
-        return pd.Series(0.0005, index=X_fold.index)
-
-    # print(f"[COST-DEBUG] Using {len(cost_proxies.columns)} cost proxies: {cost_proxies.columns.tolist()}")
-
-    # Normalize each proxy
-    for col in cost_proxies.columns:
-        col_min, col_max = cost_proxies[col].min(), cost_proxies[col].max()
-        if col_max != col_min:
-            cost_proxies[col] = (cost_proxies[col] - col_min) / (col_max - col_min)
-        else:
-            cost_proxies[col] = 0.5
-
-    composite_score = cost_proxies.mean(axis=1).fillna(0.5)
-    min_cost_bps, max_cost_bps = 5, 25
-    scaled_cost_bps = min_cost_bps + (composite_score * (max_cost_bps - min_cost_bps))
-    
-    final_costs = scaled_cost_bps / 10000
-    # print(f"[COST-DEBUG] Cost range: {final_costs.min()*10000:.1f} to {final_costs.max()*10000:.1f} bps")
-    
-    return final_costs
 
 def select_features_for_fold(X: pd.DataFrame, y: pd.Series, top_n: int, seed: int) -> list:
-    """Selects the top N features based on LightGBM feature importance."""
-    # This function is correct and remains unchanged.
+    """
+    Selects the top N features based on LightGBM feature importance.
+    Assumes X is already imputed.
+    """
     if X.empty: return []
-    X_imputed = X.fillna(X.median())
     feature_ranker = LGBMClassifier(n_estimators=100, random_state=seed, n_jobs=-1, verbosity=-1)
-    feature_ranker.fit(X_imputed, y)
+    feature_ranker.fit(X, y)
     importances_df = pd.DataFrame({'Feature': X.columns, 'Importance': feature_ranker.feature_importances_})
     return importances_df.sort_values(by='Importance', ascending=False).head(top_n)['Feature'].tolist()
 
@@ -79,24 +28,43 @@ def annualize_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.0) -> f
     excess_returns = returns - risk_free_rate / 252
     return (np.mean(excess_returns) / np.std(excess_returns)) * np.sqrt(252)
 
+def calculate_sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
+    """Calculates the Sortino ratio (uses downside deviation)."""
+    if len(returns) < 2:
+        return np.nan
+    excess = returns - risk_free_rate / 252
+    downside = excess[excess < 0]
+    if downside.std() == 0:
+        return np.nan
+    return excess.mean() / downside.std() * np.sqrt(252)
+
 def adjusted_sharpe_ratio(sharpe: float, num_signals: int, target_signals: int = 100) -> float:
     """Adjusts the Sharpe Ratio for the number of trades."""
     # This function is correct and remains unchanged.
     if pd.isna(sharpe) or num_signals <= 0: return 0.0
     return sharpe * min(1.0, np.sqrt(num_signals / target_signals))
 
-def find_optimal_threshold(predicted_returns: pd.Series, actual_returns: pd.Series, costs: pd.Series) -> dict:
-    """Finds the regressor output threshold that maximizes adjusted Sharpe on a validation set."""
-    best_score, best_threshold = -np.inf, np.nan
-    for percentile in range(1, 100):
-        threshold = np.percentile(predicted_returns, percentile)
-        final_selection_idx = predicted_returns[predicted_returns >= threshold].index
-        final_returns_after_cost = actual_returns.loc[final_selection_idx] - costs.loc[final_selection_idx]
-        if len(final_returns_after_cost) < 10: continue
-        score = adjusted_sharpe_ratio(annualize_sharpe_ratio(final_returns_after_cost), len(final_returns_after_cost))
-        if pd.notna(score) and score > best_score:
-            best_score, best_threshold = score, threshold
-    return {'validation_score': best_score, 'optimal_threshold': best_threshold}
+def calculate_position_sizes(predicted_returns: pd.Series, min_size: float = 0.25, max_size: float = 1.0) -> pd.Series:
+    """
+    Scales regressor outputs to a position size between min_size and max_size.
+    """
+    if predicted_returns.empty:
+        return pd.Series(dtype=float)
+    
+    # Min-Max Scaling
+    min_pred = predicted_returns.min()
+    max_pred = predicted_returns.max()
+    
+    if max_pred == min_pred:
+        # If all predictions are the same, assign the average size
+        return pd.Series( (min_size + max_size) / 2, index=predicted_returns.index)
+        
+    scaled_preds = (predicted_returns - min_pred) / (max_pred - min_pred)
+    
+    # Scale to the desired range [min_size, max_size]
+    position_sizes = min_size + scaled_preds * (max_size - min_size)
+    
+    return position_sizes
 
 def hypergeometric_pvalue(gt_hits_idx, selected_idx, population_size):
     """
@@ -117,53 +85,117 @@ def hypergeometric_pvalue(gt_hits_idx, selected_idx, population_size):
     pval = rv.sf(n_overlap - 1)  # sf is 1-cdf, so this is P(X >= n_overlap)
     return pval
 
-def evaluate_fold(classifier, regressor, optimal_threshold, X_eval, y_bin_eval, y_cont_eval, costs_eval):
-    """Evaluates a model on a given dataset (validation or test) using a pre-determined optimal threshold."""
-    if X_eval.empty or pd.isna(optimal_threshold): return None
+def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval, costs_eval):
+    """
+    Evaluates a model using fractional sizing based on the regressor's output.
+    NOTE: The 'optimal_threshold' parameter has been removed.
+    """
+    if X_eval.empty or regressor is None: return None
+    
+    # STAGE 1: Get all buy signals from the classifier (the "gatekeeper")
     buy_signals = classifier.predict(X_eval)
     if buy_signals.sum() == 0: return None
     
     pos_class_idx = X_eval.index[buy_signals == 1]
-    predicted_returns = pd.Series(regressor.predict(X_eval.loc[pos_class_idx]), index=pos_class_idx)
     
-    final_selection_idx = predicted_returns[predicted_returns >= optimal_threshold].index
-    if final_selection_idx.empty: return None
+    # STAGE 2: Predict returns for the classifier's selections
+    predicted_returns = pd.Series(regressor.predict(X_eval.loc[pos_class_idx]), index=pos_class_idx)
+    if predicted_returns.empty: return None
 
-    final_returns_net = y_cont_eval.loc[final_selection_idx] - costs_eval.loc[final_selection_idx]
+    # NEW: Calculate position sizes based on regressor's predicted returns
+    position_sizes = calculate_position_sizes(predicted_returns)
+
+    # --- FINAL PORTFOLIO CALCULATION (WEIGHTED) ---
+    # Note: We now use pos_class_idx, the full set of classifier signals
+    actual_returns = y_cont_eval.loc[pos_class_idx]
+    trade_costs = costs_eval.loc[pos_class_idx]
+
+    # One-way cost assumption: pay half the quoted spread per entry
+    half_spread_costs = trade_costs * 0.5
+
+    # Size haircut: scale position by 0.5% / spread, cap at 1
+    size_haircut = (0.005 / half_spread_costs).clip(upper=1)
+    effective_sizes = position_sizes * size_haircut
+
+    # Zero-weight trades whose one-way cost exceeds 100 bps
+    high_cost_mask = half_spread_costs > 0.01  # 100 bps
+    effective_sizes.loc[high_cost_mask] = 0.0
+
+    final_returns_net = (actual_returns * effective_sizes) - (half_spread_costs * effective_sizes)
+
+    # Average cost actually paid (bps) weighted by position size
+    if effective_sizes.sum() > 0:
+        avg_cost_bps_paid = (half_spread_costs * effective_sizes).sum() / effective_sizes.sum() * 1e4
+    else:
+        avg_cost_bps_paid = np.nan
+    
     if final_returns_net.empty: return None
 
+    # --- METRICS ---
+    # Standard metrics are now calculated on the weighted portfolio returns
     sharpe_final_net = annualize_sharpe_ratio(final_returns_net)
+    sortino_final_net = calculate_sortino_ratio(final_returns_net)
     adj_sharpe_final_net = adjusted_sharpe_ratio(sharpe_final_net, len(final_returns_net))
+
+    # Calculate Information Coefficient (IC)
+    # Use actual_returns BEFORE costs to measure pure prediction skill
+    ic, _ = spearmanr(position_sizes, y_cont_eval.loc[pos_class_idx])
+    
+    # Calculate Capital Utilization
+    avg_position_size = position_sizes.mean()
+
+    # Calculate Profit Concentration
+    # Sort trades by their net profit
+    sorted_net_returns = final_returns_net.sort_values(ascending=False)
+    top_10_percent_count = int(len(sorted_net_returns) * 0.10)
+    profit_from_top_10_pct = sorted_net_returns.head(top_10_percent_count).sum()
+    total_profit = sorted_net_returns.sum()
+    profit_concentration = profit_from_top_10_pct / total_profit if total_profit > 0 else 0
 
     # Classifier-only metrics (on all buy_signals)
     if buy_signals.sum() > 1:
         # Only compute if there are at least 2 signals
         classifier_returns = y_cont_eval.loc[X_eval.index[buy_signals == 1]] - costs_eval.loc[X_eval.index[buy_signals == 1]]
         sharpe_classifier = annualize_sharpe_ratio(classifier_returns)
+        sortino_classifier = calculate_sortino_ratio(classifier_returns)
         adj_sharpe_classifier = adjusted_sharpe_ratio(sharpe_classifier, len(classifier_returns))
     else:
         sharpe_classifier = np.nan
         adj_sharpe_classifier = np.nan
+        sortino_classifier = np.nan
 
     # Hypergeometric p-value for ground truth hits vs classifier hits
     gt_hits_idx = X_eval.index[y_bin_eval == 1]
     classifier_hits_idx = X_eval.index[buy_signals == 1]
     pval_classifier = hypergeometric_pvalue(gt_hits_idx, classifier_hits_idx, len(X_eval))
 
-    # Hypergeometric p-value for ground truth hits vs final hits
-    final_hits_idx = final_selection_idx
-    pval_final = hypergeometric_pvalue(gt_hits_idx, final_hits_idx, len(X_eval))
+    # --- MEDIAN RETURN METRICS ---
+    # Median return for all potential trades identified by the binary target
+    median_alpha_gt = y_cont_eval.loc[gt_hits_idx].median() if not gt_hits_idx.empty else np.nan
+    
+    # Median return for all trades selected by the classifier
+    median_alpha_classifier = y_cont_eval.loc[classifier_hits_idx].median() if not classifier_hits_idx.empty else np.nan
+    
+    # Median of the final, weighted net returns
+    median_alpha_final = final_returns_net.median() if not final_returns_net.empty else np.nan
 
     return {
         'Adj Sharpe (Net)': adj_sharpe_final_net,
         'Sharpe (Net)': sharpe_final_net,
+        'Sortino (Net)': sortino_final_net,
         'Num Signals (Final)': len(final_returns_net),
-        'Avg Cost (bps)': costs_eval.loc[final_selection_idx].mean() * 10000,
+        'Avg Cost (bps)': avg_cost_bps_paid,
         'MCC (Classifier)': matthews_corrcoef(y_bin_eval, buy_signals),
         'Sharpe (Classifier)': sharpe_classifier,
+        'Sortino (Classifier)': sortino_classifier,
         'Adj Sharpe (Classifier)': adj_sharpe_classifier,
         'GT-vs-Classifier p-value': pval_classifier,
-        'GT-vs-Final p-value': pval_final
+        'Information Coefficient': ic,
+        'Avg Position Size': avg_position_size,
+        'Profit Concentration (Top 10%)': profit_concentration,
+        'Median Alpha (Ground Truth)': median_alpha_gt,
+        'Median Alpha (Classifier)': median_alpha_classifier,
+        'Median Alpha (Final Net)': median_alpha_final,
     }
 
 def save_strategy_results(results_df: pd.DataFrame, stats_dir: Path, file_name_prefix: str):

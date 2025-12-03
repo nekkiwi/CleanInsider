@@ -1,0 +1,139 @@
+name: Daily Inference and Trading
+
+on:
+  # Run at 8:00 AM ET (13:00 UTC) on weekdays
+  schedule:
+    - cron: '0 13 * * 1-5'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (no actual trades)'
+        required: false
+        default: 'false'
+        type: boolean
+      days_back:
+        description: 'Days to look back for events'
+        required: false
+        default: '7'
+        type: string
+      model:
+        description: 'Model to run (leave empty for all 3)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inference:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # Continue other models if one fails
+      matrix:
+        model:
+          - id: model_1w_tp5_sl5
+            folder: 1w_tp0p05_sl-0p05
+          - id: model_2w_tp5_sl5
+            folder: 2w_tp0p05_sl-0p05
+          - id: model_1m_tp5_sl5
+            folder: 1m_tp0p05_sl-0p05
+    
+    name: "${{ matrix.model.id }}"
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Create required directories
+        run: |
+          mkdir -p data/models/${{ matrix.model.folder }}
+          mkdir -p data/preprocessing
+          mkdir -p logs/trades
+          mkdir -p logs/performance
+      
+      - name: Download models from Google Drive
+        env:
+          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+          GDRIVE_MODELS_FOLDER_ID: ${{ secrets.GDRIVE_MODELS_FOLDER_ID }}
+          GDRIVE_LOG_SHEET_ID: ${{ secrets.GDRIVE_LOG_SHEET_ID }}
+        run: |
+          echo "Downloading model: ${{ matrix.model.id }}"
+          # Note: Models should already be on Google Drive
+          # This step can be customized to download specific model folders
+          python run_inference.py --download-models || echo "Download skipped or failed"
+      
+      - name: Run inference for ${{ matrix.model.id }}
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          PAPER_MODE: ${{ secrets.PAPER_MODE || 'true' }}
+          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+          GDRIVE_MODELS_FOLDER_ID: ${{ secrets.GDRIVE_MODELS_FOLDER_ID }}
+          GDRIVE_LOG_SHEET_ID: ${{ secrets.GDRIVE_LOG_SHEET_ID }}
+        run: |
+          ARGS="--model ${{ matrix.model.id }}"
+          
+          # Add dry run flag if specified
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          
+          # Add days back if specified
+          if [ -n "${{ inputs.days_back }}" ]; then
+            ARGS="$ARGS --days-back ${{ inputs.days_back }}"
+          fi
+          
+          # Save signals to artifact with model name
+          ARGS="$ARGS --output signals_${{ matrix.model.id }}.parquet"
+          
+          echo "Running: python run_inference.py $ARGS"
+          python run_inference.py $ARGS
+      
+      - name: Upload signals artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signals-${{ matrix.model.id }}-${{ github.run_id }}
+          path: |
+            signals_${{ matrix.model.id }}.parquet
+            logs/
+          retention-days: 30
+      
+      - name: Report status
+        if: always()
+        run: |
+          echo "=== Model: ${{ matrix.model.id }} ==="
+          echo "Paper mode: ${PAPER_MODE:-true}"
+          echo "Dry run: ${{ inputs.dry_run || 'false' }}"
+          
+          if [ -f signals_${{ matrix.model.id }}.parquet ]; then
+            echo "Signals file generated"
+          else
+            echo "No signals file (no trades or error)"
+          fi
+
+  notify:
+    needs: inference
+    runs-on: ubuntu-latest
+    if: failure()
+    
+    steps:
+      - name: Notify on failure
+        run: |
+          echo "One or more inference pipelines failed!"
+          echo "Check the workflow logs for details."
+          # Add notification logic here (Slack, email, etc.)

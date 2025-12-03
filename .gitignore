@@ -112,3 +112,7 @@ dmypy.json
 # IDE settings
 .idea/
 .vscode/
+
+# Add to .gitignore
+.env
+*.json
