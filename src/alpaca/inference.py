@@ -251,20 +251,26 @@ class EnsemblePredictor:
             selected_features = model_info["selected_features"]
             imputation_values = model_info["imputation_values"]
             
-            # Get features this model was trained on
-            available_features = [f for f in selected_features if f in features_df.columns]
+            # Build feature matrix with exact columns model expects
+            X = pd.DataFrame(index=features_df.index)
             
-            if not available_features:
-                continue
+            for feat in selected_features:
+                if feat in features_df.columns:
+                    X[feat] = features_df[feat].copy()
+                elif feat in imputation_values:
+                    X[feat] = imputation_values[feat]  # Use training imputation value
+                else:
+                    X[feat] = 0  # Default to 0 for unknown features
             
-            X = features_df[available_features].copy()
-            
-            # Apply model-specific imputation
+            # Apply model-specific imputation for any remaining NaNs
             for col, val in imputation_values.items():
                 if col in X.columns:
                     X[col] = X[col].fillna(val)
             
             X = X.fillna(0)
+            
+            # Ensure correct column order
+            X = X[selected_features]
             
             # Get classifier predictions
             try:
@@ -283,12 +289,14 @@ class EnsemblePredictor:
                 continue
         
         if not all_buy_votes:
+            print("[WARN] No models succeeded in prediction")
             return pd.DataFrame({
                 "Ticker": identifiers["Ticker"],
                 "Filing Date": identifiers["Filing Date"],
                 "buy_signal": 0,
                 "position_size": 0.0,
-                "confidence": 0.0
+                "confidence": 0.0,
+                "predicted_return": 0.0
             })
         
         # Ensemble voting for buy signal
