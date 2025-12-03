@@ -18,28 +18,37 @@ on:
         required: false
         default: '7'
         type: string
-      model:
-        description: 'Model to run (leave empty for all 3)'
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
+
+env:
+  # Alpaca credentials
+  ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  PAPER_MODE: 'true'
+  
+  # Google credentials
+  GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+  GDRIVE_MODELS_FOLDER_ID: ${{ secrets.GDRIVE_MODELS_FOLDER_ID }}
+  GDRIVE_LOG_SHEET_ID: ${{ secrets.GDRIVE_LOG_SHEET_ID }}
 
 jobs:
   inference:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false  # Continue other models if one fails
+      fail-fast: false
       matrix:
         model:
           - id: model_1w_tp5_sl5
-            folder: 1w_tp0p05_sl-0p05
+            folder: model_1w_tp5_sl5
+            strategy: 1w_tp0p05_sl-0p05
           - id: model_2w_tp5_sl5
-            folder: 2w_tp0p05_sl-0p05
+            folder: model_2w_tp5_sl5
+            strategy: 2w_tp0p05_sl-0p05
           - id: model_1m_tp5_sl5
-            folder: 1m_tp0p05_sl-0p05
+            folder: model_1m_tp5_sl5
+            strategy: 1m_tp0p05_sl-0p05
     
     name: "${{ matrix.model.id }}"
     
@@ -58,46 +67,66 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Create required directories
+      - name: Install rclone
         run: |
-          mkdir -p data/models/${{ matrix.model.folder }}
-          mkdir -p data/preprocessing
+          curl https://rclone.org/install.sh | sudo bash
+      
+      - name: Create directories
+        run: |
+          mkdir -p data/models/${{ matrix.model.strategy }}
+          mkdir -p data/scrapers/features/preprocessing
           mkdir -p logs/trades
           mkdir -p logs/performance
       
       - name: Download models from Google Drive
         env:
-          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
-          GDRIVE_MODELS_FOLDER_ID: ${{ secrets.GDRIVE_MODELS_FOLDER_ID }}
-          GDRIVE_LOG_SHEET_ID: ${{ secrets.GDRIVE_LOG_SHEET_ID }}
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.readonly
+          RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
         run: |
-          echo "Downloading model: ${{ matrix.model.id }}"
-          # Note: Models should already be on Google Drive
-          # This step can be customized to download specific model folders
-          python run_inference.py --download-models || echo "Download skipped or failed"
+          echo "Downloading model: ${{ matrix.model.folder }}"
+          
+          # Download weights and reconstruct folder structure
+          echo "Downloading weights..."
+          rclone copy "gdrive,root_folder_id=${{ secrets.GDRIVE_MODELS_FOLDER_ID }}:${{ matrix.model.folder }}/weights/" "data/models/${{ matrix.model.strategy }}_flat/" -v
+          
+          # Reconstruct fold/seed structure from flat files
+          echo "Reconstructing folder structure..."
+          for file in data/models/${{ matrix.model.strategy }}_flat/*.pkl; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              # Parse fold1_seed42_classifier.pkl -> fold_1/seed_42/classifier.pkl
+              if [[ $filename =~ ^fold([0-9]+)_seed([0-9]+)_(.+)$ ]]; then
+                fold="${BASH_REMATCH[1]}"
+                seed="${BASH_REMATCH[2]}"
+                rest="${BASH_REMATCH[3]}"
+                mkdir -p "data/models/${{ matrix.model.strategy }}/fold_${fold}/seed_${seed}"
+                cp "$file" "data/models/${{ matrix.model.strategy }}/fold_${fold}/seed_${seed}/${rest}"
+                echo "  $filename -> fold_${fold}/seed_${seed}/${rest}"
+              fi
+            fi
+          done
+          
+          # Download preprocessing artifacts
+          echo "Downloading preprocessing..."
+          rclone copy "gdrive,root_folder_id=${{ secrets.GDRIVE_MODELS_FOLDER_ID }}:${{ matrix.model.folder }}/preprocessing/" "data/scrapers/features/preprocessing/" -v
+          
+          echo "Download complete."
+          ls -la data/models/${{ matrix.model.strategy }}/
+          ls -la data/scrapers/features/preprocessing/
       
       - name: Run inference for ${{ matrix.model.id }}
-        env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-          PAPER_MODE: ${{ secrets.PAPER_MODE || 'true' }}
-          GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
-          GDRIVE_MODELS_FOLDER_ID: ${{ secrets.GDRIVE_MODELS_FOLDER_ID }}
-          GDRIVE_LOG_SHEET_ID: ${{ secrets.GDRIVE_LOG_SHEET_ID }}
         run: |
           ARGS="--model ${{ matrix.model.id }}"
           
-          # Add dry run flag if specified
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
           
-          # Add days back if specified
           if [ -n "${{ inputs.days_back }}" ]; then
             ARGS="$ARGS --days-back ${{ inputs.days_back }}"
           fi
           
-          # Save signals to artifact with model name
           ARGS="$ARGS --output signals_${{ matrix.model.id }}.parquet"
           
           echo "Running: python run_inference.py $ARGS"
@@ -136,4 +165,3 @@ jobs:
         run: |
           echo "One or more inference pipelines failed!"
           echo "Check the workflow logs for details."
-          # Add notification logic here (Slack, email, etc.)
