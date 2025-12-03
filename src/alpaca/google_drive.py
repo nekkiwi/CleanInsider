@@ -217,11 +217,11 @@ class GoogleDriveClient:
             # Prepare data for sheets
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Define columns for trade log (added Model column)
+            # Define columns for trade log (Model at END for backwards compatibility)
             header = [
-                "Timestamp", "Date", "Model", "Ticker", "Shares", "Price", 
+                "Timestamp", "Date", "Ticker", "Shares", "Price", 
                 "Dollar Amount", "Spread (bps)", "Position Size", 
-                "Confidence", "Predicted Return", "Order Status"
+                "Confidence", "Predicted Return", "Order Status", "Model"
             ]
             
             rows = [header]
@@ -230,7 +230,6 @@ class GoogleDriveClient:
                 trade_row = [
                     timestamp,
                     datetime.date.today().isoformat(),
-                    model_id,
                     str(row.get("Ticker", "")),
                     int(row.get("shares", 0)),
                     round(float(row.get("price", row.get("Price", 0))), 2),
@@ -239,7 +238,8 @@ class GoogleDriveClient:
                     round(float(row.get("base_size", row.get("position_size", 0))), 3),
                     round(float(row.get("confidence", 0)), 3) if "confidence" in row else "",
                     round(float(row.get("predicted_return", 0)), 4) if "predicted_return" in row else "",
-                    str(row.get("order_status", ""))
+                    str(row.get("order_status", "")),
+                    model_id  # Model at the end
                 ]
                 rows.append(trade_row)
             
@@ -274,17 +274,16 @@ class GoogleDriveClient:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             date = datetime.date.today().isoformat()
             
-            # Define columns for performance log (added Model column)
+            # Define columns for performance log (Model at END for backwards compatibility)
             header = [
-                "Timestamp", "Date", "Model", "Portfolio Value", "Cash", "Equity",
+                "Timestamp", "Date", "Portfolio Value", "Cash", "Equity",
                 "Num Trades", "Total Invested", "Num Positions",
-                "Daily PnL", "Daily PnL %", "Notes"
+                "Daily PnL", "Daily PnL %", "Notes", "Model"
             ]
             
             row = [
                 timestamp,
                 date,
-                model_id,
                 round(float(metrics.get("portfolio_value", 0)), 2),
                 round(float(metrics.get("cash", 0)), 2),
                 round(float(metrics.get("equity", 0)), 2),
@@ -293,7 +292,8 @@ class GoogleDriveClient:
                 int(metrics.get("num_positions", 0)),
                 round(float(metrics.get("daily_pnl", 0)), 2) if "daily_pnl" in metrics else "",
                 round(float(metrics.get("daily_pnl_pct", 0)), 4) if "daily_pnl_pct" in metrics else "",
-                str(metrics.get("notes", ""))
+                str(metrics.get("notes", "")),
+                model_id  # Model at the end
             ]
             
             success = self._append_rows(self.PERFORMANCE_SHEET, [header, row], include_header=True)
