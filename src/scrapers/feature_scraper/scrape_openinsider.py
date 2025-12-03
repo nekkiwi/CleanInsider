@@ -102,7 +102,7 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
     print(f"\n[MAIN-INFO] Starting scrape_openinsider for {num_weeks} weeks")
     
     # Step 1: Create date ranges
-    end_date = datetime.datetime.now() - datetime.timedelta(days=30*3)
+    end_date = datetime.datetime.now()# - datetime.timedelta(days=30*3)
     date_ranges = []
     for week in range(num_weeks):
         start_date = end_date - datetime.timedelta(days=7)
