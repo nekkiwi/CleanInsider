@@ -382,25 +382,97 @@ class GoogleDriveClient:
             return None
     
     def download_models(self, local_models_path: Path = None, strategy: str = None) -> int:
-        """Download models from Google Drive."""
+        """
+        Download models from Google Drive.
+        
+        Supports two folder structures:
+        1. Flattened: model_xxx/weights/, model_xxx/preprocessing/
+        2. Nested: strategy/fold_X/seed_Y/
+        """
         if not self.drive_service or not self.models_folder_id:
             return 0
         
         local_path = local_models_path or config.MODELS_PATH
+        local_path.mkdir(parents=True, exist_ok=True)
+        
         items = self.list_files(self.models_folder_id)
         downloaded = 0
         
         for item in items:
-            if strategy and item["name"] != strategy:
+            item_name = item["name"]
+            
+            # Skip items that don't match strategy filter
+            if strategy and strategy not in item_name:
                 continue
             
             if item["mimeType"] == "application/vnd.google-apps.folder":
-                downloaded += self._download_folder_recursive(item["id"], local_path / item["name"])
+                # Check if this is a model folder with weights/preprocessing structure
+                sub_items = self.list_files(item["id"])
+                sub_names = [s["name"] for s in sub_items]
+                
+                if "weights" in sub_names or "preprocessing" in sub_names:
+                    # Flattened structure: model_xxx/weights/, model_xxx/preprocessing/
+                    for sub_item in sub_items:
+                        if sub_item["name"] == "weights":
+                            # Download weights to models path, reconstructing fold structure
+                            downloaded += self._download_flattened_weights(
+                                sub_item["id"], 
+                                local_path / self._model_name_to_strategy(item_name)
+                            )
+                        elif sub_item["name"] == "preprocessing":
+                            # Download preprocessing to preprocessing path
+                            preproc_path = config.PREPROCESSING_ARTIFACTS_PATH
+                            preproc_path.mkdir(parents=True, exist_ok=True)
+                            downloaded += self._download_folder_recursive(sub_item["id"], preproc_path)
+                else:
+                    # Nested structure: strategy/fold_X/seed_Y/
+                    downloaded += self._download_folder_recursive(item["id"], local_path / item_name)
             else:
-                if self.download_file(item["id"], local_path / item["name"]):
+                if self.download_file(item["id"], local_path / item_name):
                     downloaded += 1
         
         print(f"[INFO] Downloaded {downloaded} model files")
+        return downloaded
+    
+    def _model_name_to_strategy(self, model_name: str) -> str:
+        """Convert model name like 'model_1w_tp5_sl5' to strategy '1w_tp0p05_sl-0p05'."""
+        # Map common patterns
+        mappings = {
+            "model_1w_tp5_sl5": "1w_tp0p05_sl-0p05",
+            "model_2w_tp5_sl5": "2w_tp0p05_sl-0p05",
+            "model_1m_tp5_sl5": "1m_tp0p05_sl-0p05",
+        }
+        return mappings.get(model_name, model_name)
+    
+    def _download_flattened_weights(self, folder_id: str, local_folder: Path) -> int:
+        """
+        Download flattened weight files and reconstruct fold/seed structure.
+        
+        Files like 'fold1_seed42_classifier.pkl' go to 'fold_1/seed_42/classifier.pkl'
+        """
+        items = self.list_files(folder_id)
+        downloaded = 0
+        
+        for item in items:
+            if item["mimeType"] == "application/vnd.google-apps.folder":
+                continue
+                
+            name = item["name"]
+            
+            # Parse filename: fold1_seed42_classifier.pkl -> fold_1/seed_42/classifier.pkl
+            if name.startswith("fold") and "_seed" in name:
+                parts = name.split("_")
+                fold_num = parts[0].replace("fold", "")
+                seed_num = parts[1].replace("seed", "")
+                file_name = "_".join(parts[2:])  # Rest is the filename
+                
+                target_path = local_folder / f"fold_{fold_num}" / f"seed_{seed_num}" / file_name
+            else:
+                target_path = local_folder / name
+            
+            if self.download_file(item["id"], target_path):
+                downloaded += 1
+        
         return downloaded
     
     def _download_folder_recursive(self, folder_id: str, local_folder: Path) -> int:
