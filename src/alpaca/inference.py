@@ -128,10 +128,16 @@ class EnsemblePredictor:
         Returns:
             Tuple of (scaler, outlier_bounds, imputation_values, columns_info)
         """
+        # Try fold-specific directory first, then root preprocessing directory
         fold_dir = self.preprocessing_path / f"fold_{fold}"
         
         if not fold_dir.exists():
-            raise FileNotFoundError(f"Preprocessing artifacts not found: {fold_dir}")
+            # Check if files are in root preprocessing directory (flattened structure)
+            if (self.preprocessing_path / "scaler.pkl").exists():
+                fold_dir = self.preprocessing_path
+                print(f"[INFO] Using flattened preprocessing directory: {fold_dir}")
+            else:
+                raise FileNotFoundError(f"Preprocessing artifacts not found: {fold_dir}")
         
         scaler_path = fold_dir / "scaler.pkl"
         outlier_path = fold_dir / "outlier_bounds.json"
