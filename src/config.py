@@ -69,7 +69,7 @@ COMMON_FEATURES_PATH = PREPROCESSING_ARTIFACTS_PATH / "common_features.json"
 MAX_POSITION_SIZE = 0.05  # 5% max per position
 
 # Maximum total exposure as fraction of portfolio
-MAX_TOTAL_EXPOSURE = 0.50  # 50% max total invested
+MAX_TOTAL_EXPOSURE = 3.0  # 300% for paper trading (allows margin)
 
 # Minimum position size in dollars
 MIN_POSITION_DOLLARS = 100
