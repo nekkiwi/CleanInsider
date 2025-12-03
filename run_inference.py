@@ -137,6 +137,21 @@ def size_and_execute_trades(
         print("[INFO] No signals to trade")
         return pd.DataFrame()
     
+    # Filter out stocks we already hold (avoid duplicate positions)
+    current_positions = trading_client.get_positions()
+    held_tickers = set(current_positions.keys()) if current_positions else set()
+    
+    original_count = len(signals_df)
+    signals_df = signals_df[~signals_df["Ticker"].isin(held_tickers)].copy()
+    filtered_count = original_count - len(signals_df)
+    
+    if filtered_count > 0:
+        print(f"[INFO] Filtered {filtered_count} signals for stocks already held")
+    
+    if signals_df.empty:
+        print("[INFO] No new signals to trade (all already held)")
+        return pd.DataFrame()
+    
     # Get account info
     account = trading_client.get_account()
     if not account:

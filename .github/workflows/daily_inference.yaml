@@ -75,6 +75,7 @@ jobs:
         run: |
           mkdir -p data/models/${{ matrix.model.strategy }}
           mkdir -p data/scrapers/features/preprocessing
+          mkdir -p data/scrapers/features/components
           mkdir -p logs/trades
           mkdir -p logs/performance
       

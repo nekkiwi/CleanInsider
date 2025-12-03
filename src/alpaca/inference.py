@@ -201,7 +201,19 @@ class EnsemblePredictor:
         if scaler is not None and hasattr(scaler, "feature_names_in_"):
             scale_cols = [col for col in scaler.feature_names_in_ if col in df.columns]
             if scale_cols:
-                df[scale_cols] = scaler.transform(df[scale_cols].fillna(0))
+                # Check if we have enough features (at least 50%)
+                coverage = len(scale_cols) / len(scaler.feature_names_in_)
+                if coverage < 0.5:
+                    print(f"[WARN] Only {coverage:.0%} of scaler features available, skipping scaling")
+                else:
+                    # Add missing features as 0 for scaling
+                    missing_cols = [col for col in scaler.feature_names_in_ if col not in df.columns]
+                    for col in missing_cols:
+                        df[col] = 0
+                    # Now scale with all features
+                    all_scale_cols = list(scaler.feature_names_in_)
+                    df[all_scale_cols] = scaler.transform(df[all_scale_cols].fillna(0))
+                    print(f"[INFO] Scaled {len(scale_cols)} features ({len(missing_cols)} filled with 0)")
         
         return df
     
