@@ -203,18 +203,25 @@ def _load_from_local(ticker: str, db_path_str: str) -> pd.DataFrame:
     if not db_path.exists():
         return pd.DataFrame()
     ticker_lower = ticker.lower()
-    candidate_files = list(db_path.rglob(f"*{ticker_lower}.*txt"))
-    if not candidate_files:
-        return pd.DataFrame()
-    # Prefer an exact stem match, otherwise the first candidate.
-    chosen = next(
-        (f for f in candidate_files if f.stem.lower() == ticker_lower),
-        candidate_files[0],
-    )
-    local_data = read_csv_safe(chosen)
-    if local_data.empty:
-        return pd.DataFrame()
-    return _standardize_and_clean(local_data, ticker, source="local_file")
+    # Stooq files are "<ticker>.<country>.txt" (e.g. aapl.us.txt, a.us.txt). Match
+    # the ticker segment EXACTLY. The old code compared Path.stem, which keeps the
+    # country suffix ("a.us" != "a"), so it never matched and fell back to the first
+    # of many rglob hits — loading the WRONG ticker's prices for short/substring
+    # tickers (A, AA, C, ...). Now: require an exact first-segment match; if none,
+    # return empty so yfinance serves it. Never load a wrong ticker's data.
+    # Also try the dash form for class shares (OpenInsider "BRK.B" -> Stooq "brk-b").
+    variants = [ticker_lower]
+    if "." in ticker_lower:
+        variants.append(ticker_lower.replace(".", "-"))
+    for v in variants:
+        matches = [
+            f for f in db_path.rglob(f"{v}.*txt") if f.name.lower().split(".")[0] == v
+        ]
+        if matches:
+            local_data = read_csv_safe(matches[0])
+            if not local_data.empty:
+                return _standardize_and_clean(local_data, ticker, source="local_file")
+    return pd.DataFrame()
 
 
 @lru_cache(maxsize=None)
