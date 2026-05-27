@@ -124,6 +124,13 @@ DROP_FEATURE_PREFIXES = tuple(
     if p.strip()
 )
 
+# Net-of-cost target: train classifier/regressor on (gross alpha - round-trip
+# Corwin-Schultz spread) and label net >= 0, dropping events with no spread.
+# Aligns the objective with CAPTURABLE return so the model learns (via the
+# spread feature) to avoid high-spread illiquid names instead of chasing gross
+# alpha into untradeable micro-caps. Set to "false" to train on gross alpha.
+NET_OF_COST_TARGET = os.getenv("NET_OF_COST_TARGET", "true").lower() == "true"
+
 
 def strategy_target_combinations():
     """STRATEGY_GRID as the {time, tp, sl} dicts expected by target generation."""

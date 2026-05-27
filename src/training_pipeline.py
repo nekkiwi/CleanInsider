@@ -145,9 +145,22 @@ class ModelTrainer:
         data_df = data_df.dropna(subset=[target_col]).copy()
         if data_df.empty:
             return None, None, None
-        y_continuous, y_binary = data_df[target_col], (
-            data_df[target_col] >= (threshold_pct / 100.0)
-        ).astype(int)
+
+        if getattr(config, "NET_OF_COST_TARGET", False):
+            # Net-of-cost target: subtract the round-trip spread (full quoted
+            # Corwin-Schultz) and label net >= 0. Drop events with no spread
+            # (untradeable). The model thus optimizes capturable return and
+            # learns to avoid high-spread names from the spread feature.
+            if "corwin_schultz_spread" not in data_df.columns:
+                return None, None, None
+            data_df = data_df.dropna(subset=["corwin_schultz_spread"])
+            if data_df.empty:
+                return None, None, None
+            y_continuous = data_df[target_col] - data_df["corwin_schultz_spread"]
+            y_binary = (y_continuous >= 0.0).astype(int)
+        else:
+            y_continuous = data_df[target_col]
+            y_binary = (data_df[target_col] >= (threshold_pct / 100.0)).astype(int)
         drop_prefixes = getattr(config, "DROP_FEATURE_PREFIXES", ())
         feature_cols = [
             c
