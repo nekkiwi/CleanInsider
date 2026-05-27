@@ -16,9 +16,9 @@ high-payoff TP-SL book it inflates Sharpe to ~2.4.
      ``src.alpaca.inference.EnsemblePredictor``).
   2. Votes on the held-out test set; for buys, averages regressor outputs into a
      conviction and min-max scales it into a position weight.
-  3. Builds a positions table with a one-way entry cost (0.5 * Corwin-Schultz
-     spread) and feeds it to ``simulate_daily_portfolio`` to obtain a genuine
-     daily alpha curve.
+  3. Builds a positions table with a round-trip cost (full Corwin-Schultz
+     spread = ~half-spread on entry + half on exit) and feeds it to
+     ``simulate_daily_portfolio`` to obtain a genuine daily alpha curve.
   4. Computes portfolio metrics on ``port_alpha`` (and reports ``port_raw``
      Sharpe as ``raw_sharpe``).
 
@@ -53,10 +53,11 @@ from src.training.training_helpers import (
     horizon_business_days,
 )
 
-# Placeholder one-way cost (return fraction) when a spread is unavailable.
-# Mirrors the 0.005 live placeholder; one-way = 0.5 * spread, so default spread
-# 0.005 here is treated as the *one-way* cost directly to match the live default.
-DEFAULT_ONE_WAY_COST = 0.005
+# Round-trip trading cost (return fraction) charged when a spread is unavailable.
+# Round-trip drag = the full quoted spread (pay ~half on entry, ~half on exit).
+# Entry-only (one-way) costs flatter the backtest ~2x on Sharpe; round-trip is
+# the honest default. The live one-way placeholder is 0.005, so round-trip ~ 0.01.
+DEFAULT_ROUND_TRIP_COST = 0.01
 
 
 def strategy_string(strategy: tuple) -> str:
@@ -196,10 +197,12 @@ def _ensemble_signals(
 def _attach_entry_costs(
     positions: pd.DataFrame, test_spreads: Optional[pd.DataFrame]
 ) -> pd.DataFrame:
-    """Add a one-way ``entry_cost`` = 0.5 * corwin_schultz_spread per position.
+    """Add a round-trip ``entry_cost`` = corwin_schultz_spread per position.
 
-    Merges ``test_spreads`` (Ticker, Filing Date, corwin_schultz_spread) onto the
-    positions (keyed Ticker + entry_date). Missing -> ``DEFAULT_ONE_WAY_COST``.
+    The round-trip drag (enter near the ask, exit near the bid) equals the full
+    quoted spread. Merges ``test_spreads`` (Ticker, Filing Date,
+    corwin_schultz_spread) onto the positions (keyed Ticker + entry_date).
+    Missing -> ``DEFAULT_ROUND_TRIP_COST``.
     """
     positions = positions.copy()
     if test_spreads is not None and not test_spreads.empty:
@@ -213,10 +216,11 @@ def _attach_entry_costs(
             right_on=["Ticker", "Filing Date"],
             how="left",
         )
-        one_way = 0.5 * merged["corwin_schultz_spread"]
-        positions["entry_cost"] = one_way.fillna(DEFAULT_ONE_WAY_COST).to_numpy()
+        # Round-trip drag == full quoted spread (half-spread each on entry+exit).
+        round_trip = merged["corwin_schultz_spread"]
+        positions["entry_cost"] = round_trip.fillna(DEFAULT_ROUND_TRIP_COST).to_numpy()
     else:
-        positions["entry_cost"] = DEFAULT_ONE_WAY_COST
+        positions["entry_cost"] = DEFAULT_ROUND_TRIP_COST
     return positions
 
 
@@ -254,7 +258,7 @@ def backtest_strategy(
         overridable so tests can stub models without joblib/pickles.
     max_spread_cost : tradability liquidity filter on the full quoted spread;
         defaults to ``config.MAX_SPREAD_COST`` (filter ON). Names whose quoted
-        spread (2 * one-way entry_cost) exceeds this are dropped, mirroring the
+        spread (== round-trip entry_cost) exceeds this are dropped, mirroring the
         live PositionSizer. Pass a large value (e.g. ``float("inf")``) to disable.
     per_name_cap, max_gross_exposure : capital-model caps threaded into
         ``simulate_daily_portfolio`` (default 5% per name, 100% gross).
@@ -333,10 +337,10 @@ def backtest_strategy(
     positions = _attach_entry_costs(positions, test_spreads)
 
     # --- Tradability filter: skip names the live system would reject ---
-    # entry_cost is the one-way (half) spread, so the full quoted spread is 2x.
-    # Mirrors PositionSizer dropping names above config.MAX_SPREAD_COST.
+    # entry_cost is now the round-trip cost == full quoted spread, so compare it
+    # directly. Mirrors PositionSizer dropping names above config.MAX_SPREAD_COST.
     if max_spread_cost is not None:
-        keep = (2.0 * positions["entry_cost"]) <= max_spread_cost
+        keep = positions["entry_cost"] <= max_spread_cost
         positions = positions[keep].reset_index(drop=True)
         if positions.empty:
             return {

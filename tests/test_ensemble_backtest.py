@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.training.ensemble_backtest import (  # noqa: E402
-    DEFAULT_ONE_WAY_COST,
+    DEFAULT_ROUND_TRIP_COST,
     backtest_strategy,
     strategy_string,
 )
@@ -194,7 +194,7 @@ def test_backtest_strategy_votes_costs_and_metrics(tmp_path):
 
 
 def test_backtest_entry_cost_comes_from_spreads(tmp_path):
-    """The first active day must reflect the 0.5*spread one-way cost.
+    """The first active day must reflect the round-trip (full-spread) cost.
 
     Run once with the real spreads and once with no spread table (default cost),
     and confirm the first-day portfolio alpha differs by the cost delta.
@@ -212,15 +212,15 @@ def test_backtest_entry_cost_comes_from_spreads(tmp_path):
         model_loader=_make_model_loader(models),
         vote_threshold=0.5,
     )
-    # With spreads: AAA one-way 0.005, BBB one-way 0.01 (0.5 * spread).
+    # With spreads: round-trip cost == full spread (AAA 0.01, BBB 0.02).
     r_spread = backtest_strategy(strategy, test_spreads_df=spreads, **common)
-    # Without spreads: both default to DEFAULT_ONE_WAY_COST.
+    # Without spreads: both default to DEFAULT_ROUND_TRIP_COST.
     r_default = backtest_strategy(strategy, test_spreads_df=None, **common)
 
-    assert DEFAULT_ONE_WAY_COST == 0.005
+    assert DEFAULT_ROUND_TRIP_COST == 0.01
     # Both produce a finite, sane Sharpe (not astronomical).
     assert abs(r_spread["sharpe"]) < 50
-    # Higher costs (default 0.005 on BBB vs its real 0.01 one-way) shift total
+    # Real round-trip cost on BBB (0.02) vs the default (0.01) shifts total
     # alpha; the two runs must not be identical when any cost differs.
     assert r_spread["total_alpha"] != r_default["total_alpha"]
 
