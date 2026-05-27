@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+
 load_dotenv()  # Add this at the top of config.py
 
 # --- Base Directories ---
@@ -49,7 +50,9 @@ GOOGLE_DRIVE_CREDENTIALS = os.environ.get("GOOGLE_DRIVE_CREDENTIALS", "")
 GDRIVE_MODELS_FOLDER_ID = os.environ.get("GDRIVE_MODELS_FOLDER_ID", "")
 
 # Google Sheets ID for logging (spreadsheet ID, not folder)
-GDRIVE_LOG_SHEET_ID = os.environ.get("GDRIVE_LOG_SHEET_ID", os.environ.get("GDRIVE_LOGS_FOLDER_ID", ""))
+GDRIVE_LOG_SHEET_ID = os.environ.get(
+    "GDRIVE_LOG_SHEET_ID", os.environ.get("GDRIVE_LOGS_FOLDER_ID", "")
+)
 
 # --- Inference Configuration ---
 # Best performing strategy configuration

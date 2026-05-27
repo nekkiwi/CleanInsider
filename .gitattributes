@@ -1,0 +1,22 @@
+# Normalize line endings: store everything as LF in the repo.
+# Fixes the CRLF churn caused by core.autocrlf=true with no attributes file.
+* text=auto eol=lf
+
+# Explicitly treat known text types as LF.
+*.py    text eol=lf
+*.md    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.cfg   text eol=lf
+*.toml  text eol=lf
+*.sh    text eol=lf
+
+# Binary / data artifacts: never touch.
+*.parquet binary
+*.pkl     binary
+*.zip     binary
+*.xlsx    binary
+*.png     binary
+*.jpg     binary

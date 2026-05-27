@@ -1,6 +1,8 @@
 """Quick Alpaca API test with immediate output."""
-import sys
+
 import os
+import sys
+
 sys.stdout.reconfigure(line_buffering=True)
 
 print("Starting Alpaca test...")
@@ -9,18 +11,23 @@ print(f"Secret set: {'ALPACA_SECRET_KEY' in os.environ}")
 
 # Add project root
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 print("Importing config...")
 from src import config
+
 print(f"  Paper mode: {config.PAPER_MODE}")
-print(f"  API key prefix: {config.ALPACA_API_KEY[:8] if config.ALPACA_API_KEY else 'NOT SET'}...")
+print(
+    f"  API key prefix: {config.ALPACA_API_KEY[:8] if config.ALPACA_API_KEY else 'NOT SET'}..."
+)
 
 print("\nImporting alpaca-py...")
 try:
-    from alpaca.trading.client import TradingClient
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockLatestQuoteRequest
+    from alpaca.trading.client import TradingClient
+
     print("  Imports OK")
 except ImportError as e:
     print(f"  Import failed: {e}")
@@ -29,9 +36,7 @@ except ImportError as e:
 print("\nCreating TradingClient...")
 try:
     client = TradingClient(
-        api_key=config.ALPACA_API_KEY,
-        secret_key=config.ALPACA_SECRET_KEY,
-        paper=True
+        api_key=config.ALPACA_API_KEY, secret_key=config.ALPACA_SECRET_KEY, paper=True
     )
     print("  Client created")
 except Exception as e:
@@ -61,8 +66,7 @@ except Exception as e:
 print("\nCreating data client...")
 try:
     data_client = StockHistoricalDataClient(
-        api_key=config.ALPACA_API_KEY,
-        secret_key=config.ALPACA_SECRET_KEY
+        api_key=config.ALPACA_API_KEY, secret_key=config.ALPACA_SECRET_KEY
     )
     print("  Data client created")
 except Exception as e:
@@ -75,11 +79,12 @@ try:
     quotes = data_client.get_stock_latest_quote(request)
     for sym, quote in quotes.items():
         spread = (quote.ask_price - quote.bid_price) / quote.ask_price
-        print(f"  {sym}: bid=${quote.bid_price:.2f} ask=${quote.ask_price:.2f} spread={spread:.4f}")
+        print(
+            f"  {sym}: bid=${quote.bid_price:.2f} ask=${quote.ask_price:.2f} spread={spread:.4f}"
+        )
 except Exception as e:
     print(f"  Failed: {e}")
 
-print("\n" + "="*40)
+print("\n" + "=" * 40)
 print("TEST COMPLETE")
-print("="*40)
-
+print("=" * 40)

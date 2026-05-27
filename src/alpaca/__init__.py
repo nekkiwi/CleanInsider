@@ -10,11 +10,11 @@ This module provides:
 - google_drive: Model sync and trade logging
 """
 
+from .google_drive import GoogleDriveClient
 from .inference import EnsemblePredictor
 from .live_features import LiveFeatureGenerator
-from .trading_client import AlpacaTradingClient
 from .position_sizer import PositionSizer
-from .google_drive import GoogleDriveClient
+from .trading_client import AlpacaTradingClient
 
 __all__ = [
     "EnsemblePredictor",
@@ -23,5 +23,3 @@ __all__ = [
     "PositionSizer",
     "GoogleDriveClient",
 ]
-
-

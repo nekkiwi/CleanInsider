@@ -1,0 +1,47 @@
+name: CI
+
+# Code-quality + test gate. Runs on PRs and pushes to main.
+# This is NOT a trading job: it uses no secrets and places no orders.
+# Live-API tests (Alpaca / Google) self-skip when credentials are absent.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ruff (lint)
+        run: ruff check .
+
+      - name: Black (format check)
+        run: black --check .
+
+      - name: Pytest
+        # CI has no trained models and no API credentials, so deselect:
+        #   slow        -> needs model/data artifacts on disk
+        #   integration -> hits live Alpaca/Google APIs
+        # PAPER_MODE kept true as a belt-and-suspenders guard.
+        env:
+          PAPER_MODE: 'true'
+        run: pytest tests/ -q -m "not slow and not integration"
