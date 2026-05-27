@@ -131,6 +131,32 @@ DROP_FEATURE_PREFIXES = tuple(
 # alpha into untradeable micro-caps. Set to "false" to train on gross alpha.
 NET_OF_COST_TARGET = os.getenv("NET_OF_COST_TARGET", "true").lower() == "true"
 
+# --- Liquid-universe pivot (replaces Corwin-Schultz liquidity/cost) ---
+# The insider-buy strategy lost money because the model traded illiquid micro-caps
+# whose real spreads dwarfed the gross alpha. Corwin-Schultz proved to be a
+# volatility-contaminated, UNRELIABLE liquidity proxy. Instead, define "liquid" by
+# real dollar volume (ADV) + price and charge a realistic FLAT round-trip cost.
+# At price>=$10 and ADV>=$5M the insider alpha is net-POSITIVE
+# (16,181 events, gross ~+0.7-0.9%, net@20bps ~+0.5%, 55% net>0).
+LIQUID_PRICE_MIN = 10.0  # $ minimum entry price (no sub-$10 names)
+LIQUID_ADV_MIN = 5_000_000.0  # $ minimum 60-day median dollar volume (ADV)
+# Realistic round-trip cost (20 bps) for genuinely liquid large/mid-caps. Flat,
+# NOT Corwin-Schultz: once the universe is restricted to ADV>=$5M / price>=$10
+# names, a single conservative flat cost is a better estimate of capturable
+# trading cost than a volatility-contaminated per-name CS spread.
+LIQUID_ROUND_TRIP_COST = 0.002  # 20 bps round-trip
+
+# When True (default), training and backtesting restrict to the liquid universe
+# (price>=LIQUID_PRICE_MIN and ADV>=LIQUID_ADV_MIN) and use the flat
+# LIQUID_ROUND_TRIP_COST instead of Corwin-Schultz. Set LIQUID_UNIVERSE_ONLY=false
+# to fall back to the legacy CS-based liquidity/cost behavior.
+LIQUID_UNIVERSE_ONLY = os.getenv("LIQUID_UNIVERSE_ONLY", "true").lower() == "true"
+
+# Point-in-time ADV component table: per (Ticker, Filing Date) 60-day rolling
+# median dollar volume, taken asof the filing date. Produced by
+# src/scrapers/feature_scraper/generate_adv.py.
+ADV_COMPONENT_PATH = FEATURES_OUTPUT_PATH / "components" / "adv.parquet"
+
 
 def strategy_target_combinations():
     """STRATEGY_GRID as the {time, tp, sl} dicts expected by target generation."""

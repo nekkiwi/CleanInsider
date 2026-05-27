@@ -168,6 +168,7 @@ def test_backtest_strategy_votes_costs_and_metrics(tmp_path):
         seeds=seeds,
         model_loader=_make_model_loader(models),
         vote_threshold=0.5,
+        liquid_mode=False,  # legacy CS path (this test supplies CS spreads)
     )
 
     # Only AAA and BBB clear the >=0.5 vote threshold.
@@ -211,6 +212,7 @@ def test_backtest_entry_cost_comes_from_spreads(tmp_path):
         seeds=seeds,
         model_loader=_make_model_loader(models),
         vote_threshold=0.5,
+        liquid_mode=False,  # legacy CS path: cost comes from the CS spread
     )
     # With spreads: round-trip cost == full spread (AAA 0.01, BBB 0.02).
     r_spread = backtest_strategy(strategy, test_spreads_df=spreads, **common)
@@ -245,6 +247,136 @@ def test_backtest_no_buys_returns_zero_trades(tmp_path):
         seeds=seeds,
         model_loader=_make_model_loader(no_buy),
         vote_threshold=0.5,
+        liquid_mode=False,
     )
     assert result["n_trades"] == 0
     assert np.isnan(result["sharpe"])
+
+
+# --------------------------------------------------------------------------- #
+# Liquid-mode tests (price + ADV filter, flat round-trip cost)
+# --------------------------------------------------------------------------- #
+def _build_liquid_inputs(tmp_path):
+    """Like _build_inputs but the test frame carries Price + adv columns.
+
+    AAA is liquid (price 50, adv 50M); BBB is illiquid (price 8 < $10 min) so the
+    liquid filter must drop it even though it clears the vote threshold.
+    """
+    strategy, folds, seeds, base, test_df, models, ohlcv, spreads = _build_inputs(
+        tmp_path
+    )
+    test_df = test_df.copy()
+    test_df["Price"] = [50.0, 8.0, 50.0, 50.0]  # BBB below $10 liquidity floor
+    test_df["adv"] = [50e6, 50e6, 50e6, 50e6]
+    return strategy, folds, seeds, base, test_df, models, ohlcv, spreads
+
+
+def test_liquid_mode_price_filter_drops_illiquid(tmp_path):
+    from src import config
+
+    strategy, folds, seeds, base, test_df, models, ohlcv, spreads = (
+        _build_liquid_inputs(tmp_path)
+    )
+    result = backtest_strategy(
+        strategy,
+        models_base_path=base,
+        test_features_df=test_df,
+        ohlcv_loader=_make_ohlcv_loader(ohlcv),
+        spx_arrays=_flat_spx(BDAYS[:10]),
+        folds=folds,
+        seeds=seeds,
+        model_loader=_make_model_loader(models),
+        vote_threshold=0.5,
+        liquid_mode=True,
+    )
+    # AAA + BBB both vote-buy, but BBB (price 8 < LIQUID_PRICE_MIN) is dropped.
+    assert config.LIQUID_PRICE_MIN == 10.0
+    assert result["n_trades"] == 1
+
+
+def test_liquid_mode_adv_filter_drops_thin(tmp_path):
+    strategy, folds, seeds, base, test_df, models, ohlcv, spreads = (
+        _build_liquid_inputs(tmp_path)
+    )
+    test_df = test_df.copy()
+    test_df["Price"] = [50.0, 50.0, 50.0, 50.0]  # all clear price
+    test_df["adv"] = [50e6, 1e6, 50e6, 50e6]  # BBB adv 1M < $5M min
+    result = backtest_strategy(
+        strategy,
+        models_base_path=base,
+        test_features_df=test_df,
+        ohlcv_loader=_make_ohlcv_loader(ohlcv),
+        spx_arrays=_flat_spx(BDAYS[:10]),
+        folds=folds,
+        seeds=seeds,
+        model_loader=_make_model_loader(models),
+        vote_threshold=0.5,
+        liquid_mode=True,
+    )
+    assert result["n_trades"] == 1  # only AAA survives the ADV filter
+
+
+def test_liquid_mode_flat_cost_independent_of_spread(tmp_path):
+    """Liquid cost is the FLAT round-trip, NOT the CS spread.
+
+    Run liquid_mode with two very different CS spread tables; results must be
+    identical because liquid mode ignores the spread and uses the flat cost.
+    """
+    strategy, folds, seeds, base, test_df, models, ohlcv, _ = _build_liquid_inputs(
+        tmp_path
+    )
+    test_df = test_df.copy()
+    test_df["Price"] = [50.0, 50.0, 50.0, 50.0]
+    test_df["adv"] = [50e6, 50e6, 50e6, 50e6]  # both buys liquid
+
+    common = dict(
+        models_base_path=base,
+        test_features_df=test_df,
+        ohlcv_loader=_make_ohlcv_loader(ohlcv),
+        spx_arrays=_flat_spx(BDAYS[:10]),
+        folds=folds,
+        seeds=seeds,
+        model_loader=_make_model_loader(models),
+        vote_threshold=0.5,
+        liquid_mode=True,
+    )
+    cheap = pd.DataFrame(
+        {
+            "Ticker": ["AAA", "BBB"],
+            "Filing Date": [BDAYS[0], BDAYS[0]],
+            "corwin_schultz_spread": [0.001, 0.001],
+        }
+    )
+    pricey = pd.DataFrame(
+        {
+            "Ticker": ["AAA", "BBB"],
+            "Filing Date": [BDAYS[0], BDAYS[0]],
+            "corwin_schultz_spread": [0.05, 0.05],
+        }
+    )
+    r_cheap = backtest_strategy(strategy, test_spreads_df=cheap, **common)
+    r_pricey = backtest_strategy(strategy, test_spreads_df=pricey, **common)
+
+    assert r_cheap["n_trades"] == 2 and r_pricey["n_trades"] == 2
+    # Flat cost: spread table is irrelevant in liquid mode.
+    assert r_cheap["total_alpha"] == r_pricey["total_alpha"]
+
+
+def test_liquid_mode_missing_price_adv_drops_all(tmp_path):
+    """No Price/adv columns -> unknown liquidity -> everything untradeable."""
+    strategy, folds, seeds, base, test_df, models, ohlcv, spreads = _build_inputs(
+        tmp_path
+    )  # plain test_df has no Price/adv
+    result = backtest_strategy(
+        strategy,
+        models_base_path=base,
+        test_features_df=test_df,
+        ohlcv_loader=_make_ohlcv_loader(ohlcv),
+        spx_arrays=_flat_spx(BDAYS[:10]),
+        folds=folds,
+        seeds=seeds,
+        model_loader=_make_model_loader(models),
+        vote_threshold=0.5,
+        liquid_mode=True,
+    )
+    assert result["n_trades"] == 0

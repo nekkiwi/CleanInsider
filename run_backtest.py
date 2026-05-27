@@ -97,11 +97,40 @@ def main() -> int:
         "gross <= 100% (no leverage); unfilled exposure = cash."
     )
 
+    # Liquid mode filters on Price + ADV, which live on the master event list +
+    # the ADV component, not in test_data.parquet. Merge them onto the test
+    # features so the liquidity filter can see them.
+    test_features_df = pd.read_parquet(test_features_path)
+    test_features_df["Filing Date"] = pd.to_datetime(test_features_df["Filing Date"])
+    if getattr(config, "LIQUID_UNIVERSE_ONLY", False):
+        # test_data already carries raw entry Price; only ADV is missing.
+        if "Price" not in test_features_df.columns:
+            mel = pd.read_parquet(config.MASTER_EVENT_LIST_PATH)[
+                ["Ticker", "Filing Date", "Price"]
+            ].drop_duplicates(["Ticker", "Filing Date"])
+            mel["Filing Date"] = pd.to_datetime(mel["Filing Date"])
+            test_features_df = test_features_df.merge(
+                mel, on=["Ticker", "Filing Date"], how="left"
+            )
+        if Path(config.ADV_COMPONENT_PATH).exists():
+            adv = pd.read_parquet(config.ADV_COMPONENT_PATH)[
+                ["Ticker", "Filing Date", "adv"]
+            ].drop_duplicates(["Ticker", "Filing Date"])
+            adv["Filing Date"] = pd.to_datetime(adv["Filing Date"])
+            test_features_df = test_features_df.merge(
+                adv, on=["Ticker", "Filing Date"], how="left"
+            )
+        n_liquid = (
+            (pd.to_numeric(test_features_df.get("Price"), errors="coerce") >= config.LIQUID_PRICE_MIN)
+            & (pd.to_numeric(test_features_df.get("adv"), errors="coerce") >= config.LIQUID_ADV_MIN)
+        ).sum()
+        print(f"  Liquid universe: {n_liquid} of {len(test_features_df)} test events tradeable")
+
     report = run_all(
         strategies=config.STRATEGY_GRID,
         model_type=args.model_type,
         models_base_path=models_base_path,
-        test_features_path=test_features_path,
+        test_features_df=test_features_df,
         test_spreads_path=test_spreads_path,
         spx_arrays=spx_arrays,
         out_dir=config.ROOT_DIR / "results",
