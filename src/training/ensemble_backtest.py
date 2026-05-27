@@ -277,6 +277,8 @@ def backtest_strategy(
     per_name_cap: Optional[float] = None,
     max_gross_exposure: float = 1.0,
     liquid_mode: Optional[bool] = None,
+    entry_offset: int = 0,
+    entry_open: bool = False,
 ) -> dict:
     """Backtest one ensemble strategy on the held-out test set.
 
@@ -298,6 +300,8 @@ def backtest_strategy(
         (e.g. ``float("inf")``) to disable. Ignored when ``liquid_mode`` is True.
     per_name_cap, max_gross_exposure : capital-model caps threaded into
         ``simulate_daily_portfolio`` (default 5% per name, 100% gross).
+    entry_offset : delay every position's entry by ``k`` trading days (default 0).
+        Threaded into ``simulate_daily_portfolio`` for the entry-timing stress.
     liquid_mode : when True (default ``config.LIQUID_UNIVERSE_ONLY``), the
         tradability filter is the liquid universe (Price >= LIQUID_PRICE_MIN AND
         adv >= LIQUID_ADV_MIN, read from the test features) and every position is
@@ -433,6 +437,8 @@ def backtest_strategy(
         db_path=db_path,
         per_name_cap=per_name_cap,
         max_gross_exposure=max_gross_exposure,
+        entry_offset=entry_offset,
+        entry_open=entry_open,
     )
 
     alpha_metrics = compute_portfolio_metrics(
