@@ -150,6 +150,32 @@ MAX_SPREAD_COST = 0.03  # 300 bps (3%) - higher threshold for small caps
 # Ensemble voting threshold (fraction of models that must agree)
 ENSEMBLE_VOTE_THRESHOLD = 0.5  # Majority vote
 
+# --- Volatility-targeted sizing (Stage 4) ---
+# Sizing method: "vol_target" (ATR risk-budget) or "minmax" (legacy conviction
+# fraction of MAX_POSITION_SIZE). vol_target is the default going forward;
+# "minmax" preserves the original calculate_dollar_sizes behavior for parity.
+SIZING_METHOD = os.environ.get("SIZING_METHOD", "vol_target")
+
+# Fraction of portfolio risked per trade (loss at the stop). 1.25% per name.
+RISK_PER_TRADE_PCT = 0.0125
+
+# Target aggregate net long exposure as a fraction of portfolio value. The
+# vol_target batch step scales all allocations down so that
+# current_exposure + sum(new) does not exceed this.
+TARGET_NET_EXPOSURE = 0.50  # 50% net long
+
+# ATR (Average True Range) lookback in daily bars, and the stop multiple used to
+# turn ATR into a per-share stop distance. stop_distance = ATR_STOP_MULT * ATR.
+ATR_PERIOD = 14
+ATR_STOP_MULT = 1.5
+
+# Max tolerated portfolio drawdown before de-risking (reserved for Stage 5 use).
+MAX_PORTFOLIO_DD = 0.15
+
+# Upper bound on the fractional-Kelly multiplier (reserved for Stage 5, when the
+# realized-trade ledger exists). Kelly cap is a no-op pass-through until then.
+KELLY_FRACTION_CAP = 0.5
+
 # --- Logging Configuration ---
 LOG_DIR = ROOT_DIR / "logs"
 TRADE_LOG_PATH = LOG_DIR / "trades"

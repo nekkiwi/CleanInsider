@@ -129,6 +129,7 @@ def size_and_execute_trades(
     trading_client: AlpacaTradingClient,
     position_sizer: PositionSizer,
     dry_run: bool = False,
+    strategy: tuple = None,
 ) -> pd.DataFrame:
     """Size positions and execute trades."""
     print("\n=== Position Sizing and Trade Execution ===")
@@ -182,6 +183,17 @@ def size_and_execute_trades(
         prices_dict = trading_client.get_latest_prices(tickers)
         if prices_dict:
             signals_df["Price"] = signals_df["Ticker"].map(prices_dict)
+
+    # Fetch ATR for volatility-targeted sizing. Missing symbols are simply
+    # omitted; the sizer falls back to a pct stop tied to the strategy SL.
+    if config.SIZING_METHOD == "vol_target":
+        print("\nStep 1b: Fetching ATR (daily) for volatility-targeted sizing...")
+        atr_map = trading_client.get_atr(tickers)
+        signals_df["atr"] = signals_df["Ticker"].map(atr_map)
+        print(f"  Got ATR for {len(atr_map)}/{len(tickers)} symbols")
+        # Tie the pct-stop fallback to the strategy's bracket stop-loss.
+        strat = strategy or config.DEFAULT_STRATEGY
+        signals_df["strategy_sl"] = strat[2]
 
     # Size positions with spread haircut
     print("\nStep 2: Calculating position sizes (with spread haircut)...")
@@ -381,7 +393,11 @@ def main():
 
     # Size and execute trades
     trades_df = size_and_execute_trades(
-        signals_df, trading_client, position_sizer, dry_run=args.dry_run
+        signals_df,
+        trading_client,
+        position_sizer,
+        dry_run=args.dry_run,
+        strategy=strategy,
     )
 
     # Log results to Google Sheets

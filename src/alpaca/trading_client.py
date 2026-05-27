@@ -12,7 +12,8 @@ from src import config
 
 try:
     from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockLatestQuoteRequest
+    from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
+    from alpaca.data.timeframe import TimeFrame
     from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import (
         OrderSide,
@@ -231,6 +232,76 @@ class AlpacaTradingClient:
         except Exception as e:
             print(f"[WARN] Failed to get prices: {e}")
             return {}
+
+    def get_atr(self, symbols: List[str], period: int = None) -> Dict[str, float]:
+        """
+        Compute the Average True Range (ATR) per symbol from recent daily bars.
+
+        Fetches ~period+1 daily bars via the alpaca-py
+        StockHistoricalDataClient.get_stock_bars and computes ATR as the mean of
+        the true range over the lookback window. True range for bar i is
+        max(high-low, |high-prev_close|, |low-prev_close|); the first bar has no
+        previous close so it contributes no TR.
+
+        Args:
+            symbols: List of stock tickers.
+            period: ATR lookback in bars (defaults to config.ATR_PERIOD).
+
+        Returns:
+            Dict of {symbol: atr}. Symbols with insufficient/missing data are
+            OMITTED so the caller can apply its own fallback (e.g. a pct stop).
+        """
+        if period is None:
+            period = config.ATR_PERIOD
+
+        if not self.client or not getattr(self, "data_client", None):
+            return {}
+
+        if not symbols:
+            return {}
+
+        try:
+            # Request a few extra bars so we reliably get `period` true ranges
+            # even with holidays/missing sessions; we only use the most recent.
+            request = StockBarsRequest(
+                symbol_or_symbols=list(symbols),
+                timeframe=TimeFrame.Day,
+                limit=period + 5,
+            )
+            barset = self.data_client.get_stock_bars(request)
+            data = getattr(barset, "data", barset)
+        except Exception as e:  # noqa: BLE001 - network/SDK errors -> empty map
+            print(f"[WARN] Failed to fetch bars for ATR: {e}. Using fallback.")
+            return {}
+
+        atr_map: Dict[str, float] = {}
+        for symbol in symbols:
+            bars = data.get(symbol) if hasattr(data, "get") else None
+            if not bars or len(bars) < 2:
+                # Need at least 2 bars to form one true range.
+                continue
+
+            # Use the most recent `period + 1` bars (need 1 extra for prev close).
+            window = bars[-(period + 1) :]
+            true_ranges = []
+            for i in range(1, len(window)):
+                high = float(window[i].high)
+                low = float(window[i].low)
+                prev_close = float(window[i - 1].close)
+                tr = max(
+                    high - low,
+                    abs(high - prev_close),
+                    abs(low - prev_close),
+                )
+                true_ranges.append(tr)
+
+            if not true_ranges:
+                continue
+
+            atr = sum(true_ranges) / len(true_ranges)
+            atr_map[symbol] = atr
+
+        return atr_map
 
     def place_market_order(
         self, symbol: str, qty: int, side: str = "buy"
