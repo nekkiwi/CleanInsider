@@ -12,6 +12,7 @@ from src.scrapers.feature_scraper.load_macro_features import generate_macro_feat
 from src.scrapers.feature_scraper.load_technical_indicators import (
     generate_technical_indicators,
 )
+from src.scrapers.feature_scraper.prefetch_prices import prefetch_missing_tickers
 from src.scrapers.feature_scraper.scrape_openinsider import scrape_openinsider
 
 
@@ -46,6 +47,18 @@ def run_feature_scraping_pipeline(num_weeks: int, config, rescrape: bool = True)
             return
         base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
         base_df.to_parquet(base_path, index=False)
+
+        # --- Recover delisted/absent tickers into the local Stooq cache ---
+        # Batched yfinance pull for any event ticker missing locally, so the rest
+        # of the pipeline can read prices local-only (fast) without losing the
+        # survivorship-relevant delisted names.
+        try:
+            prefetch_missing_tickers(
+                base_df["Ticker"].dropna().unique().tolist(),
+                config.STOOQ_DATABASE_PATH,
+            )
+        except Exception as e:
+            print(f"  [WARN] price prefetch failed (continuing): {e}")
 
         # --- Steps 2, 3, 4: Generate feature components ---
         print("--- Step 2: Generating annual statement (fundamental) features ---")
