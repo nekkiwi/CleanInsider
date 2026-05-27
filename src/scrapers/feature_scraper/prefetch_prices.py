@@ -123,7 +123,12 @@ def prefetch_missing_tickers(
                 continue
             for tk in batch:
                 try:
-                    sub = data[tk] if len(batch) > 1 else data
+                    if isinstance(data.columns, pd.MultiIndex):
+                        if tk not in data.columns.get_level_values(0):
+                            continue
+                        sub = data[tk]
+                    else:
+                        sub = data
                     sub = sub.dropna(how="all")
                 except (KeyError, TypeError):
                     continue
