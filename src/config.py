@@ -69,6 +69,11 @@ GDRIVE_LOG_SHEET_ID = os.environ.get(
     "GDRIVE_LOG_SHEET_ID", os.environ.get("GDRIVE_LOGS_FOLDER_ID", "")
 )
 
+# Drive file ID of the persistent position ledger parquet (Stage 5a). Empty on
+# first run; run_inference creates the file and the id is then stored in the env
+# so subsequent runs overwrite it in place via GoogleDriveClient.upload_or_update.
+GDRIVE_LEDGER_FILE_ID = os.environ.get("GDRIVE_LEDGER_FILE_ID", "")
+
 # --- Inference Configuration ---
 # Best performing strategy configuration
 DEFAULT_STRATEGY = ("1w", 0.05, -0.05)
