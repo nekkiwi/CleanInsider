@@ -63,8 +63,14 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
     # --- Step 2: Unify Date into the Index (THE CRITICAL FIX) ---
     # If 'date' exists as a column (from local files), set it as the index.
     if "date" in df_clean.columns:
-        # print(f"  [CLEAN-DEBUG] Found 'date' column for {ticker}, converting to datetime")
-        df_clean["date"] = pd.to_datetime(df_clean["date"], errors="coerce")
+        # Stooq local files store the date as a YYYYMMDD integer; pd.to_datetime
+        # would misread that as epoch-nanoseconds (-> 1970). Parse with an explicit
+        # format, falling back to generic parsing for any other source.
+        date_str = df_clean["date"].astype(str).str.replace(r"[-/]", "", regex=True)
+        parsed = pd.to_datetime(date_str, format="%Y%m%d", errors="coerce")
+        if parsed.isna().all():
+            parsed = pd.to_datetime(df_clean["date"], errors="coerce")
+        df_clean["date"] = parsed
         df_clean["date"].isna().sum()
         # print(f"  [CLEAN-DEBUG] {date_na_count} rows had invalid dates and will be dropped")
         # Remove rows where date parsing failed before setting index
@@ -171,84 +177,80 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
     return df_final.sort_index()
 
 
-@lru_cache(maxsize=None)
-def load_ohlcv_with_fallback(
-    ticker: str, db_path_str: str, required_start_date: pd.Timestamp = None
+def _load_from_yfinance(
+    ticker: str, required_start_date: pd.Timestamp = None
 ) -> pd.DataFrame:
-    """
-    Robustly loads OHLCV data by trying yfinance first, then falling back to local files.
-    """
-    # print(f"\n[LOADER-START] Loading OHLCV for ticker: {ticker}")
-    # print(f"[LOADER-INFO] Required start date: {required_start_date.date() if required_start_date else 'None specified'}")
-    # print(f"[LOADER-INFO] Database path: {db_path_str}")
-
-    # --- Step 1: Try yfinance as the primary, preferred source ---
-    # Calculate start date with some buffer
+    """Load + clean OHLCV from yfinance. Returns empty DataFrame on failure."""
     start_date = required_start_date
     if start_date is not None:
-        start_date = start_date - pd.Timedelta(days=30)  # Add some buffer
-        # print(f"[LOADER-INFO] Using buffered start date for yfinance: {start_date.date()}")
+        start_date = start_date - pd.Timedelta(days=30)  # buffer
+    try:
+        data = yf.download(
+            ticker, start=start_date, progress=False, timeout=15, auto_adjust=True
+        )
+    except Exception:
+        return pd.DataFrame()
+    if data.empty:
+        return pd.DataFrame()
+    cleaned = _standardize_and_clean(data, ticker, source="yfinance")
+    # Require a reasonable amount of data to consider it a good hit.
+    return cleaned if (not cleaned.empty and len(cleaned) > 10) else pd.DataFrame()
 
-    # try:
-    # print(f"[LOADER-ATTEMPT] Trying yfinance for {ticker}...")
-    data = yf.download(
-        ticker, start=start_date, progress=False, timeout=15, auto_adjust=True
-    )
-    if not data.empty:
-        # print(f"[LOADER-SUCCESS] yfinance returned data for {ticker} with shape {data.shape}")
-        # print(f"[LOADER-DEBUG] yfinance columns: {data.columns.tolist()}")
-        cleaned_df = _standardize_and_clean(data, ticker, source="yfinance")
-        if (
-            not cleaned_df.empty and len(cleaned_df) > 10
-        ):  # Ensure we have reasonable amount of data
-            # print(f"[LOADER-FINAL] Using yfinance data for {ticker} - {len(cleaned_df)} rows")
-            return cleaned_df
-        # else:
-        # print(f"[LOADER-WARN] yfinance data for {ticker} failed cleaning or too short ({len(cleaned_df)} rows)")
-    # else:
-    # print(f"[LOADER-WARN] yfinance returned empty DataFrame for {ticker}")
-    # except Exception as e:
-    # print(f"[LOADER-ERROR] yfinance download failed for {ticker}: {e}")
 
-    # --- Step 2: Fallback to local Stooq database ---
-    # print(f"[LOADER-ATTEMPT] Trying local Stooq fallback for {ticker}...")
-    # try:
+def _load_from_local(ticker: str, db_path_str: str) -> pd.DataFrame:
+    """Load + clean OHLCV from the local Stooq DB. Returns empty on miss."""
     db_path = Path(db_path_str)
     if not db_path.exists():
-        # print(f"[LOADER-ERROR] Database path does not exist: {db_path_str}")
         return pd.DataFrame()
-
     ticker_lower = ticker.lower()
-    search_pattern = f"*{ticker_lower}.*txt"
-    # print(f"[LOADER-DEBUG] Searching for files matching: {search_pattern}")
-    candidate_files = list(db_path.rglob(search_pattern))
-    # print(f"[LOADER-DEBUG] Found {len(candidate_files)} candidate files for {ticker}")
+    candidate_files = list(db_path.rglob(f"*{ticker_lower}.*txt"))
+    if not candidate_files:
+        return pd.DataFrame()
+    # Prefer an exact stem match, otherwise the first candidate.
+    chosen = next(
+        (f for f in candidate_files if f.stem.lower() == ticker_lower),
+        candidate_files[0],
+    )
+    local_data = read_csv_safe(chosen)
+    if local_data.empty:
+        return pd.DataFrame()
+    return _standardize_and_clean(local_data, ticker, source="local_file")
 
-    if candidate_files:
-        # Prefer exact match, otherwise use first candidate
-        exact_match_file = next(
-            (f for f in candidate_files if f.stem.lower() == ticker_lower),
-            candidate_files[0],
-        )
-        # print(f"[LOADER-INFO] Selected file for {ticker}: {exact_match_file}")
 
-        # Use safe CSV reading
-        local_data = read_csv_safe(exact_match_file)
-        if not local_data.empty:
-            cleaned_local = _standardize_and_clean(
-                local_data, ticker, source="local_file"
-            )
-            if not cleaned_local.empty:
-                # print(f"[LOADER-FINAL] Using local data for {ticker} - {len(cleaned_local)} rows")
-                return cleaned_local
-                # else:
-                # print(f"[LOADER-WARN] Local data for {ticker} failed cleaning")
-            # else:
-            # print(f"[LOADER-WARN] Local file for {ticker} was empty or unreadable")
-        # else:
-        # print(f"[LOADER-WARN] No local files found for {ticker} matching pattern {search_pattern}")
-    # except Exception as e:
-    # print(f"[LOADER-ERROR] Local file processing failed for {ticker}: {e}")
+@lru_cache(maxsize=None)
+def load_ohlcv_with_fallback(
+    ticker: str,
+    db_path_str: str,
+    required_start_date: pd.Timestamp = None,
+    prefer_local: bool = None,
+) -> pd.DataFrame:
+    """
+    Load OHLCV with a local-Stooq / yfinance pair, ordered by preference.
 
-    # print(f"[LOADER-FAIL] No OHLCV data found for {ticker} from any source")
+    With a complete local Stooq DB, prefer_local=True (config.PREFER_LOCAL_OHLCV)
+    makes bulk historical scraping fast and offline; yfinance is the fallback for
+    tickers missing locally. When the local DB is absent (e.g. CI), the local
+    attempt simply misses and yfinance serves the data.
+    """
+    if prefer_local is None:
+        # Imported lazily to avoid any import-order coupling with config.
+        from src import config
+
+        prefer_local = config.PREFER_LOCAL_OHLCV
+
+    sources = (
+        [
+            lambda: _load_from_local(ticker, db_path_str),
+            lambda: _load_from_yfinance(ticker, required_start_date),
+        ]
+        if prefer_local
+        else [
+            lambda: _load_from_yfinance(ticker, required_start_date),
+            lambda: _load_from_local(ticker, db_path_str),
+        ]
+    )
+    for load in sources:
+        df = load()
+        if not df.empty:
+            return df
     return pd.DataFrame()
