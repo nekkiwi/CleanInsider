@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from src.scrapers.data_loader import load_ohlcv_with_fallback
 
-from .generate_targets import calculate_realized_alpha_series
+from .generate_targets import calculate_all_alpha_series
 
 SPX_TICKER_LOCAL = "^spx"
 SPX_TICKER_YFINANCE = "^GSPC"
@@ -174,28 +174,27 @@ def calculate_master_targets(
         }
         # --- END OF PARALLEL LOGIC ---
 
-        batch_results_df = batch_df[["Ticker", "Filing Date"]].copy()
-        for params in target_combinations:
-            timepoint, tp, sl = params["time"], params["tp"], params["sl"]
-            col_name = f"alpha_{timepoint}_tp{str(tp).replace('.', 'p')}_sl{str(sl).replace('.', 'p')}"
+        # Single-pass: compute ALL 12 combos in one Parallel dispatch.
+        alpha_df, debug_log = calculate_all_alpha_series(
+            base_df=batch_df,
+            ohlcv_data=ohlcv_data,
+            spx_data=spx_data,
+            target_combinations=target_combinations,
+            debug=debug,
+        )
+        batch_results_df = pd.concat(
+            [
+                batch_df[["Ticker", "Filing Date"]].reset_index(drop=True),
+                alpha_df.reset_index(drop=True),
+            ],
+            axis=1,
+        )
 
-            # This function is already parallel internally, so we call it as before
-            alpha_series, debug_log = calculate_realized_alpha_series(
-                base_df=batch_df,
-                ohlcv_data=ohlcv_data,
-                spx_data=spx_data,
-                timepoint_str=timepoint,
-                take_profit=tp,
-                stop_loss=sl,
-                debug=debug,
-            )
-            batch_results_df[col_name] = alpha_series
-
-            if debug and debug_log:
-                print(f"\n--- Debug Log for {col_name} (Batch {i//batch_size + 1}) ---")
-                for msg in debug_log:
-                    print(msg)
-                print("--------------------------------------------------\n")
+        if debug and debug_log:
+            print(f"\n--- Debug Log (Batch {i//batch_size + 1}) ---")
+            for msg in debug_log:
+                print(msg)
+            print("--------------------------------------------------\n")
 
         all_results.append(batch_results_df)
 
