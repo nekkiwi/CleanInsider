@@ -6,11 +6,13 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMClassifier, LGBMRegressor
 from tqdm import tqdm
 
+from . import config
+from .training.model_factory import make_estimators
 from .training.training_helpers import (
     evaluate_fold,
+    horizon_business_days,
     save_strategy_results,
     select_features_for_fold,
 )
@@ -37,6 +39,18 @@ class ModelTrainer:
             f"{timepoint}_tp{str(tp).replace('.', 'p')}_sl{str(sl).replace('.', 'p')}"
         )
 
+    def _model_strategy_dir(self, model_type, strategy_str):
+        """Base dir for a (model_type, strategy).
+
+        LightGBM (the deployed family) keeps the historical, UN-namespaced path
+        ``{models_base_path}/{strategy_str}/`` so existing models, inference,
+        ensemble_backtest, and parity all keep working unchanged. Every other
+        family is namespaced under ``{models_base_path}/{model_type}/``.
+        """
+        if model_type == "LightGBM":
+            return self.models_base_path / strategy_str
+        return self.models_base_path / model_type / strategy_str
+
     def _save_models(
         self,
         classifier,
@@ -46,13 +60,18 @@ class ModelTrainer:
         seed,
         selected_features,
         imputation_values,
+        model_type="LightGBM",
     ):
         """Save trained models and metadata to the specified directory structure."""
         strategy_str = self._get_strategy_string(strategy)
 
-        # Create directory structure: data/models/{strategy}/fold_x/seed_x/
+        # Create directory structure:
+        #   LightGBM: data/models/{strategy}/fold_x/seed_x/
+        #   other:    data/models/{model_type}/{strategy}/fold_x/seed_x/
         model_dir = (
-            self.models_base_path / strategy_str / f"fold_{fold}" / f"seed_{seed}"
+            self._model_strategy_dir(model_type, strategy_str)
+            / f"fold_{fold}"
+            / f"seed_{seed}"
         )
         model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -72,6 +91,7 @@ class ModelTrainer:
             "strategy": strategy,
             "fold": fold,
             "seed": seed,
+            "model_type": model_type,
         }
         metadata_path = model_dir / "metadata.pkl"
         joblib.dump(metadata, metadata_path)
@@ -128,23 +148,39 @@ class ModelTrainer:
         y_continuous, y_binary = data_df[target_col], (
             data_df[target_col] >= (threshold_pct / 100.0)
         ).astype(int)
+        drop_prefixes = getattr(config, "DROP_FEATURE_PREFIXES", ())
         feature_cols = [
             c
             for c in data_df.columns
-            if c not in ["Ticker", "Filing Date"] and not c.startswith("alpha_")
+            if c not in ["Ticker", "Filing Date"]
+            and not c.startswith("alpha_")
+            and not (drop_prefixes and c.startswith(drop_prefixes))
         ]
         return data_df[feature_cols], y_binary, y_continuous
 
-    def _train_models(self, X_tr, y_bin_tr, y_cont_tr, seed):
-        """Trains classifier and regressor models."""
-        params = {
-            "random_state": seed,
-            "n_jobs": -1,
-            "verbosity": -1,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-        }
-        classifier, regressor = LGBMClassifier(**params), LGBMRegressor(**params)
+    def _train_models(self, X_tr, y_bin_tr, y_cont_tr, seed, model_type="LightGBM"):
+        """Trains classifier and regressor models.
+
+        ``model_type`` selects the estimator family via ``make_estimators``.
+        For "TabPFN" the TRAINING rows are seed-subsampled to at most
+        ``config.TABPFN_MAX_ROWS`` (TabPFN's in-context cost scales with the
+        training context); LightGBM is left untouched. Validation/test sets are
+        never subsampled here -- the caller predicts on the full sets. The
+        classifier-on-ALL / regressor-on-POSITIVES-only pattern is preserved for
+        every family; if there are no positive rows, the regressor is None.
+        """
+        if model_type == "TabPFN":
+            max_rows = getattr(config, "TABPFN_MAX_ROWS", 10000)
+            if len(X_tr) > max_rows:
+                X_tr = X_tr.sample(n=max_rows, random_state=seed)
+                y_bin_tr = y_bin_tr.loc[X_tr.index]
+                y_cont_tr = y_cont_tr.loc[X_tr.index]
+                print(
+                    f"[TABPFN] Subsampled training rows to {max_rows} "
+                    f"(seed={seed}) before fit."
+                )
+
+        classifier, regressor = make_estimators(model_type, seed)
         classifier.fit(X_tr, y_bin_tr)
         pos_idx = y_bin_tr[y_bin_tr == 1].index
         if not pos_idx.empty:
@@ -218,7 +254,7 @@ class ModelTrainer:
                 )  # Apply same imputation to validation set
 
                 classifier, regressor = self._train_models(
-                    X_tr_sel, y_bin_tr, y_cont_tr, seed
+                    X_tr_sel, y_bin_tr, y_cont_tr, seed, model_type=model_type
                 )
                 if regressor is None:
                     continue
@@ -236,8 +272,20 @@ class ModelTrainer:
                     )
                     costs_val = pd.Series(0.0005, index=X_val.index)
 
+                dates_val = (
+                    val_df["Filing Date"].reindex(X_val.index)
+                    if "Filing Date" in val_df.columns
+                    else None
+                )
                 val_metrics = evaluate_fold(
-                    classifier, regressor, X_val_sel, y_bin_val, y_cont_val, costs_val
+                    classifier,
+                    regressor,
+                    X_val_sel,
+                    y_bin_val,
+                    y_cont_val,
+                    costs_val,
+                    dates_eval=dates_val,
+                    horizon_days=horizon_business_days(timepoint),
                 )
                 if val_metrics:
                     all_validation_results.append(
@@ -260,6 +308,7 @@ class ModelTrainer:
                     seed=seed,
                     selected_features=selected_features,
                     imputation_values=imputation_values,
+                    model_type=model_type,
                 )
 
                 # --- EVALUATION 2: On the single, static final test set ---
@@ -283,6 +332,11 @@ class ModelTrainer:
                             )
                             costs_test = pd.Series(0.0005, index=X_test.index)
 
+                        dates_test = (
+                            test_df["Filing Date"].reindex(X_test.index)
+                            if "Filing Date" in test_df.columns
+                            else None
+                        )
                         test_metrics = evaluate_fold(
                             classifier,
                             regressor,
@@ -290,6 +344,8 @@ class ModelTrainer:
                             y_bin_test,
                             y_cont_test,
                             costs_test,
+                            dates_eval=dates_test,
+                            horizon_days=horizon_business_days(timepoint),
                         )
                         if test_metrics:
                             all_test_results.append(
@@ -318,11 +374,17 @@ class ModelTrainer:
                 f"{model_type}_Test_Metrics",
             )
 
-    def load_model(self, strategy, fold, seed, model_type="both"):
-        """Load a saved model for inference."""
+    def load_model(self, strategy, fold, seed, which="both", model_type="LightGBM"):
+        """Load a saved model for inference.
+
+        ``which`` selects classifier/regressor/both; ``model_type`` selects the
+        family namespace (LightGBM keeps the historical un-namespaced path).
+        """
         strategy_str = self._get_strategy_string(strategy)
         model_dir = (
-            self.models_base_path / strategy_str / f"fold_{fold}" / f"seed_{seed}"
+            self._model_strategy_dir(model_type, strategy_str)
+            / f"fold_{fold}"
+            / f"seed_{seed}"
         )
 
         if not model_dir.exists():
@@ -333,7 +395,7 @@ class ModelTrainer:
         metadata = joblib.load(metadata_path) if metadata_path.exists() else {}
 
         # Load models
-        if model_type in ["classifier", "both"]:
+        if which in ["classifier", "both"]:
             classifier_path = model_dir / "classifier.pkl"
             classifier = (
                 joblib.load(classifier_path) if classifier_path.exists() else None
@@ -341,7 +403,7 @@ class ModelTrainer:
         else:
             classifier = None
 
-        if model_type in ["regressor", "both"]:
+        if which in ["regressor", "both"]:
             regressor_path = model_dir / "regressor.pkl"
             regressor = joblib.load(regressor_path) if regressor_path.exists() else None
         else:

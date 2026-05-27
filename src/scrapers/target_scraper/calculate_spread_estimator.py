@@ -36,8 +36,13 @@ def _calculate_corwin_schultz(df: pd.DataFrame, window: int = 20) -> pd.Series:
     log_hl = np.log(df["High"] / df["Low"])
     log_hl_sq = log_hl**2
 
+    # beta: window-mean of the sum of two consecutive single-day squared log-ranges
     beta = log_hl_sq.rolling(window=2).sum().rolling(window=window).mean()
-    (
+
+    # gamma: window-mean of the squared log of the 2-day high/low range.
+    # (Previously computed but never assigned — the missing term that made the
+    # estimator collapse to (sqrt(2)-1)^2 * beta and inflate spreads to ~5%.)
+    gamma = (
         (
             np.log(
                 df["High"].rolling(window=2).max() / df["Low"].rolling(window=2).min()
@@ -48,9 +53,11 @@ def _calculate_corwin_schultz(df: pd.DataFrame, window: int = 20) -> pd.Series:
         .mean()
     )
 
-    alpha_num = (np.sqrt(2 * beta) - np.sqrt(beta)) ** 2
-    alpha_den = 3 - 2 * np.sqrt(2)
-    alpha = alpha_num / alpha_den
+    # Corwin & Schultz (2012):
+    #   alpha = (sqrt(2*beta) - sqrt(beta)) / (3 - 2*sqrt(2)) - sqrt(gamma / (3 - 2*sqrt(2)))
+    # Note: the first term is NOT squared (the prior code squared it).
+    den = 3 - 2 * np.sqrt(2)
+    alpha = (np.sqrt(2 * beta) - np.sqrt(beta)) / den - np.sqrt(gamma / den)
 
     alpha[alpha < 0] = 0
 

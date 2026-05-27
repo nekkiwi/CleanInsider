@@ -107,10 +107,85 @@ def hypergeometric_pvalue(gt_hits_idx, selected_idx, population_size):
     return pval
 
 
-def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval, costs_eval):
+def horizon_business_days(timepoint: str) -> int:
+    """Map a strategy timepoint string (e.g. '1w', '2w', '1m') to business days.
+
+    1 week -> 5, 1 month -> 21 trading days. Returns 0 for unknown input.
+    """
+    if not timepoint:
+        return 0
+    tp = str(timepoint).strip().lower()
+    unit = tp[-1]
+    try:
+        n = int(tp[:-1])
+    except ValueError:
+        n = 1
+    return {"w": n * 5, "m": n * 21, "d": n}.get(unit, 0)
+
+
+def portfolio_daily_returns(entry_dates, total_returns, weights, horizon_days):
+    """Conviction-weighted, daily-rebalanced portfolio return series.
+
+    Each trade's total net return is spread geometrically across
+    ``horizon_days`` business days from its entry (filing) date; on each day
+    the active trades are combined as a weight-normalized (fully-invested)
+    basket. Days with no active position are flat (cash). This turns the set of
+    overlapping trades into a genuine daily series, so Sharpe annualizes
+    correctly and drawdown reflects diversification rather than a single-bet
+    sequential curve.
+
+    Returns a numpy array of daily returns (empty if inputs are unusable).
+    """
+    entry_dates = pd.to_datetime(pd.Series(entry_dates)).dropna()
+    if entry_dates.empty or not horizon_days or horizon_days <= 0:
+        return np.array([])
+    total_returns = pd.Series(total_returns).reindex(entry_dates.index)
+    weights = pd.Series(weights).reindex(entry_dates.index).to_numpy(dtype=float)
+    daily_per_trade = (1.0 + total_returns.to_numpy()) ** (1.0 / horizon_days) - 1.0
+
+    bdays = pd.bdate_range(
+        entry_dates.min(),
+        entry_dates.max() + pd.tseries.offsets.BDay(horizon_days),
+    )
+    if len(bdays) == 0:
+        return np.array([])
+    start_pos = bdays.searchsorted(entry_dates.to_numpy())
+
+    num = np.zeros(len(bdays))
+    den = np.zeros(len(bdays))
+    contrib = weights * daily_per_trade
+    for offset in range(horizon_days):
+        idx = start_pos + offset
+        valid = idx < len(bdays)
+        np.add.at(num, idx[valid], contrib[valid])
+        np.add.at(den, idx[valid], weights[valid])
+    # Divide only where a position is active; flat (0.0) on cash days. Avoids
+    # the 0/0 RuntimeWarning that np.where(num/den) would trigger on cash days.
+    daily = np.zeros(len(bdays))
+    active = den > 0
+    daily[active] = num[active] / den[active]
+    return daily
+
+
+def evaluate_fold(
+    classifier,
+    regressor,
+    X_eval,
+    y_bin_eval,
+    y_cont_eval,
+    costs_eval,
+    dates_eval=None,
+    horizon_days=None,
+):
     """
     Evaluates a model using fractional sizing based on the regressor's output.
     NOTE: The 'optimal_threshold' parameter has been removed.
+
+    When ``dates_eval`` (entry/filing dates aligned to ``X_eval.index``) and
+    ``horizon_days`` are provided, portfolio-realistic ``Portfolio Sharpe
+    (Net)`` / ``Portfolio Max Drawdown`` are also computed on a daily-rebalanced
+    basket; otherwise those are NaN and only the per-trade diagnostics are
+    returned.
     """
     if X_eval.empty or regressor is None:
         return None
@@ -230,11 +305,75 @@ def evaluate_fold(classifier, regressor, X_eval, y_bin_eval, y_cont_eval, costs_
         final_returns_net.median() if not final_returns_net.empty else np.nan
     )
 
+    # --- TRADE-QUALITY / RISK METRICS (success-criteria inputs) ---
+    # Measure over EXECUTED trades only. The cost haircut zero-weights some
+    # signals (effective_size == 0); those carry no P&L, so counting them would
+    # deflate win rate and drag mean alpha toward zero. "Win Rate" (over all
+    # signals) is kept for reference; selection uses the executed variants.
+    n_trades_final = len(final_returns_net)
+    executed_mask = effective_sizes > 0
+    executed_returns = final_returns_net[executed_mask]
+    n_executed = len(executed_returns)
+
+    win_rate = (final_returns_net > 0).mean() if n_trades_final > 0 else np.nan
+    win_rate_executed = (executed_returns > 0).mean() if n_executed > 0 else np.nan
+    mean_alpha_net = executed_returns.mean() if n_executed > 0 else np.nan
+
+    gross_profit = executed_returns[executed_returns > 0].sum()
+    gross_loss = -executed_returns[executed_returns < 0].sum()
+    if gross_loss > 0:
+        profit_factor = float(gross_profit / gross_loss)
+    elif gross_profit > 0:
+        profit_factor = 100.0  # no losing trades; cap to keep value finite
+    else:
+        profit_factor = np.nan
+    if not pd.isna(profit_factor):
+        profit_factor = float(np.clip(profit_factor, 0.0, 100.0))
+
+    # Per-trade (sequential, single-bet) drawdown — kept as a diagnostic only.
+    if n_executed > 0:
+        equity_curve = (1.0 + executed_returns).cumprod()
+        running_max = equity_curve.cummax()
+        drawdown = equity_curve / running_max - 1.0
+        max_drawdown = float(-drawdown.min())
+    else:
+        max_drawdown = np.nan
+
+    # Portfolio-realistic Sharpe & MaxDD on a daily-rebalanced basket. Requires
+    # entry dates + holding horizon; otherwise left NaN (e.g. in unit tests).
+    portfolio_sharpe = np.nan
+    portfolio_max_dd = np.nan
+    portfolio_days = 0
+    if dates_eval is not None and horizon_days and n_executed > 0:
+        exec_idx = executed_returns.index
+        daily = portfolio_daily_returns(
+            entry_dates=pd.Series(dates_eval).reindex(exec_idx),
+            total_returns=executed_returns,
+            weights=effective_sizes.reindex(exec_idx),
+            horizon_days=horizon_days,
+        )
+        if daily.size > 1 and np.std(daily) > 0:
+            portfolio_sharpe = float(np.mean(daily) / np.std(daily) * np.sqrt(252))
+            equity = np.cumprod(1.0 + daily)
+            running_max = np.maximum.accumulate(equity)
+            dd = equity / running_max - 1.0
+            portfolio_max_dd = float(-dd.min())
+            portfolio_days = int((daily != 0).sum())
+
     return {
         "Adj Sharpe (Net)": adj_sharpe_final_net,
         "Sharpe (Net)": sharpe_final_net,
         "Sortino (Net)": sortino_final_net,
+        "Portfolio Sharpe (Net)": portfolio_sharpe,
+        "Portfolio Max Drawdown": portfolio_max_dd,
+        "Portfolio Days": portfolio_days,
+        "Win Rate": win_rate,
+        "Win Rate (Executed)": win_rate_executed,
+        "Mean Alpha (Net)": mean_alpha_net,
+        "Profit Factor": profit_factor,
+        "Max Drawdown": max_drawdown,
         "Num Signals (Final)": len(final_returns_net),
+        "Num Signals (Executed)": n_executed,
         "Avg Cost (bps)": avg_cost_bps_paid,
         "MCC (Classifier)": matthews_corrcoef(y_bin_eval, buy_signals),
         "Sharpe (Classifier)": sharpe_classifier,

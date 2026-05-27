@@ -1,0 +1,18 @@
+# Research-only dependencies — DO NOT add these to requirements.txt.
+#
+# These power the experimental "TabPFN" model family in train_walk_forward.py /
+# run_backtest.py (--model-type TabPFN). They are deliberately kept OUT of the
+# main requirements.txt so that CI / inference stay CPU-only and clean:
+#   * torch is large and CI runs on CPU;
+#   * tabpfn is GPU-only here (CUDA-gated in src/training/model_factory.py) and
+#     is released under a NON-COMMERCIAL license (review before any commercial
+#     use). The deployed pipeline only ever uses LightGBM.
+#
+# Install on the CUDA box (e.g. GTX 1080 Ti) with:
+#   pip install -r requirements-research.txt
+#
+# torch must match your CUDA toolkit. The verified combo is torch 2.6.0+cu124
+# (install from the matching PyTorch CUDA index URL), e.g.:
+#   pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+torch
+tabpfn

@@ -104,6 +104,26 @@ BINARY_THRESHOLDS_PCT = [2]
 # Number of top features selected per fold during training.
 TOP_N_FEATURES = 100
 
+# Research-only: max training rows fed to TabPFN per (strategy, fold, seed).
+# TabPFN is an in-context transformer whose memory/latency scale with the
+# training context; it is also designed for modest table sizes. Seed-subsample
+# training rows above this cap (val/test are never subsampled). LightGBM is
+# unaffected. Tune down (e.g. 5000) if the GTX 1080 Ti (11 GB) OOMs.
+TABPFN_MAX_ROWS = 1000000
+
+# Feature-ablation hook: comma-separated column-name prefixes to EXCLUDE from
+# the feature matrix (in addition to Ticker/Filing Date/alpha_*).
+# DEFAULT DROPS FUNDAMENTALS (FIN_/FE_): the yfinance fundamentals path leaks
+# the future (same snapshot copied to every filing date for a ticker — proven
+# 2026-05-27), and an ablation showed they add ~no edge (Sharpe 2.52->2.39).
+# Dropping them here removes the leak at training time without a re-scrape.
+# Override with the env var to re-enable once a point-in-time SEC source exists.
+DROP_FEATURE_PREFIXES = tuple(
+    p.strip()
+    for p in os.getenv("DROP_FEATURE_PREFIXES", "FIN_,FE_").split(",")
+    if p.strip()
+)
+
 
 def strategy_target_combinations():
     """STRATEGY_GRID as the {time, tp, sl} dicts expected by target generation."""
