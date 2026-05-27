@@ -230,6 +230,7 @@ def load_ohlcv_with_fallback(
     db_path_str: str,
     required_start_date: pd.Timestamp = None,
     prefer_local: bool = None,
+    local_only: bool = None,
 ) -> pd.DataFrame:
     """
     Load OHLCV with a local-Stooq / yfinance pair, ordered by preference.
@@ -238,24 +239,34 @@ def load_ohlcv_with_fallback(
     makes bulk historical scraping fast and offline; yfinance is the fallback for
     tickers missing locally. When the local DB is absent (e.g. CI), the local
     attempt simply misses and yfinance serves the data.
+
+    local_only=True (config.OHLCV_LOCAL_ONLY) drops the yfinance fallback entirely.
+    Use for bulk historical scraping: tickers missing from Stooq (mostly delisted)
+    return empty immediately instead of incurring a per-ticker yfinance timeout +
+    rate-limit, which is the dominant cost of a full scrape. Live inference leaves
+    this off so the small recent-ticker set can still fall back to yfinance.
     """
-    if prefer_local is None:
+    if prefer_local is None or local_only is None:
         # Imported lazily to avoid any import-order coupling with config.
         from src import config
 
-        prefer_local = config.PREFER_LOCAL_OHLCV
+        if prefer_local is None:
+            prefer_local = config.PREFER_LOCAL_OHLCV
+        if local_only is None:
+            local_only = config.OHLCV_LOCAL_ONLY
 
-    sources = (
-        [
+    if local_only:
+        sources = [lambda: _load_from_local(ticker, db_path_str)]
+    elif prefer_local:
+        sources = [
             lambda: _load_from_local(ticker, db_path_str),
             lambda: _load_from_yfinance(ticker, required_start_date),
         ]
-        if prefer_local
-        else [
+    else:
+        sources = [
             lambda: _load_from_yfinance(ticker, required_start_date),
             lambda: _load_from_local(ticker, db_path_str),
         ]
-    )
     for load in sources:
         df = load()
         if not df.empty:
