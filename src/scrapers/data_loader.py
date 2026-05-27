@@ -71,7 +71,6 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
         if parsed.isna().all():
             parsed = pd.to_datetime(df_clean["date"], errors="coerce")
         df_clean["date"] = parsed
-        df_clean["date"].isna().sum()
         # print(f"  [CLEAN-DEBUG] {date_na_count} rows had invalid dates and will be dropped")
         # Remove rows where date parsing failed before setting index
         df_clean = df_clean[~df_clean["date"].isna()]
@@ -83,7 +82,6 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
         # print(f"  [CLEAN-DEBUG] Converting existing index to DatetimeIndex for {ticker}")
         df_clean.index = pd.to_datetime(df_clean.index, errors="coerce")
         # Drop any rows whose index could not be parsed as a date
-        df_clean.index.isna().sum()
         # print(f"  [CLEAN-DEBUG] {index_na_count} rows had invalid index dates and will be dropped")
         df_clean = df_clean[~df_clean.index.isna()]
         # if not df_clean.empty:
@@ -147,6 +145,15 @@ def _standardize_and_clean(df: pd.DataFrame, ticker: str, source: str) -> pd.Dat
         for date, ratio in split_candidates.items():
             # Round to the nearest common split ratio (e.g., 0.5, 0.33, 0.25)
             split_ratio = 1 / round(1 / ratio)
+
+            # Both sources (local Stooq, yfinance auto_adjust=True) are already
+            # split-adjusted, so this should rarely fire. Only treat a drop as a
+            # split when it's within 2% of a clean 1/N ratio; this keeps real
+            # 2:1/3:1/4:1 splits but rejects genuine single-day crashes (common
+            # for the small/penny-cap insider universe) that would otherwise
+            # corrupt all prior prices.
+            if abs(ratio - split_ratio) > 0.02:
+                continue
 
             # Adjust all prices and volume before this date
             price_cols = ["Open", "High", "Low", "Close"]
@@ -225,6 +232,33 @@ def _load_from_local(ticker: str, db_path_str: str) -> pd.DataFrame:
 
 
 @lru_cache(maxsize=None)
+def _load_ohlcv_cached(
+    ticker: str,
+    db_path_str: str,
+    required_start_date: pd.Timestamp,
+    prefer_local: bool,
+    local_only: bool,
+) -> pd.DataFrame:
+    """Cached core: resolve source order and return the first non-empty frame."""
+    if local_only:
+        sources = [lambda: _load_from_local(ticker, db_path_str)]
+    elif prefer_local:
+        sources = [
+            lambda: _load_from_local(ticker, db_path_str),
+            lambda: _load_from_yfinance(ticker, required_start_date),
+        ]
+    else:
+        sources = [
+            lambda: _load_from_yfinance(ticker, required_start_date),
+            lambda: _load_from_local(ticker, db_path_str),
+        ]
+    for load in sources:
+        df = load()
+        if not df.empty:
+            return df
+    return pd.DataFrame()
+
+
 def load_ohlcv_with_fallback(
     ticker: str,
     db_path_str: str,
@@ -245,30 +279,18 @@ def load_ohlcv_with_fallback(
     return empty immediately instead of incurring a per-ticker yfinance timeout +
     rate-limit, which is the dominant cost of a full scrape. Live inference leaves
     this off so the small recent-ticker set can still fall back to yfinance.
+
+    Resolves config-driven defaults here (so cache keys are concrete) and returns a
+    COPY of the cached frame, so callers may mutate it without poisoning the cache.
     """
-    if prefer_local is None or local_only is None:
-        # Imported lazily to avoid any import-order coupling with config.
-        from src import config
+    from src import config
 
-        if prefer_local is None:
-            prefer_local = config.PREFER_LOCAL_OHLCV
-        if local_only is None:
-            local_only = config.OHLCV_LOCAL_ONLY
+    if prefer_local is None:
+        prefer_local = config.PREFER_LOCAL_OHLCV
+    if local_only is None:
+        local_only = config.OHLCV_LOCAL_ONLY
 
-    if local_only:
-        sources = [lambda: _load_from_local(ticker, db_path_str)]
-    elif prefer_local:
-        sources = [
-            lambda: _load_from_local(ticker, db_path_str),
-            lambda: _load_from_yfinance(ticker, required_start_date),
-        ]
-    else:
-        sources = [
-            lambda: _load_from_yfinance(ticker, required_start_date),
-            lambda: _load_from_local(ticker, db_path_str),
-        ]
-    for load in sources:
-        df = load()
-        if not df.empty:
-            return df
-    return pd.DataFrame()
+    df = _load_ohlcv_cached(
+        ticker, db_path_str, required_start_date, prefer_local, local_only
+    )
+    return df.copy()
