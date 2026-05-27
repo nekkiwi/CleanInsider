@@ -1,9 +1,19 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()  # Add this at the top of config.py
+
+# Force UTF-8 stdout/stderr so the pipeline's emoji log markers (✅/❌/🚀) don't
+# crash with UnicodeEncodeError on Windows' default cp1252 console. config is the
+# universal import for every pipeline process, so this applies everywhere.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # already UTF-8, or non-reconfigurable
+        pass
 
 # --- Base Directories ---
 # Resolves the project's root directory dynamically
@@ -24,8 +34,13 @@ MASTER_EVENT_LIST_PATH = DATA_DIR / "scrapers" / "targets" / "master_event_list.
 MODELS_PATH = DATA_DIR / "models"
 
 # --- Scraping Parameters ---
-# User agent for making polite requests
-REQUESTS_HEADER = {"User-Agent": "YourName/YourProject my.email@domain.com"}
+# User agent for making polite requests. SEC EDGAR requires a descriptive
+# User-Agent with a contact email; set SEC_USER_AGENT in .env to override.
+REQUESTS_HEADER = {
+    "User-Agent": os.environ.get(
+        "SEC_USER_AGENT", "CleanInsider research nekki.wi@gmail.com"
+    )
+}
 
 # List of all output directories to be created by the pipeline
 DIRECTORIES_TO_CREATE = [FEATURES_OUTPUT_PATH, FEATURES_INFO_OUTPUT_PATH]
@@ -62,6 +77,38 @@ DEFAULT_THRESHOLD_PCT = 2
 # Ensemble configuration: all 5 folds x 5 seeds = 25 models
 ENSEMBLE_FOLDS = [1, 2, 3, 4, 5]
 ENSEMBLE_SEEDS = [42, 123, 2024, 456, 567]
+
+# --- Strategy grid (single source of truth) ---
+# (timepoint, take_profit, stop_loss). Used by both target generation
+# (scrape_data.py) and training (train_walk_forward.py) so they never drift.
+# This is the union of strategies previously trained and deployed.
+STRATEGY_GRID = [
+    ("1w", 0.05, -0.05),
+    ("1w", 0.05, -0.10),
+    ("1w", 0.10, -0.05),
+    ("1w", 0.10, -0.10),
+    ("1w", 0.15, -0.05),
+    ("1w", 0.15, -0.10),
+    ("2w", 0.05, -0.05),
+    ("2w", 0.05, -0.10),
+    ("2w", 0.10, -0.10),
+    ("1m", 0.05, -0.05),
+    ("1m", 0.05, -0.10),
+    ("1m", 0.10, -0.10),
+]
+
+# Number of walk-forward validation folds (a held-out test set is added on top).
+NUM_VALIDATION_FOLDS = 5
+# Binary classification thresholds (percent alpha) to label/train against.
+BINARY_THRESHOLDS_PCT = [2]
+# Number of top features selected per fold during training.
+TOP_N_FEATURES = 100
+
+
+def strategy_target_combinations():
+    """STRATEGY_GRID as the {time, tp, sl} dicts expected by target generation."""
+    return [{"time": t, "tp": tp, "sl": sl} for (t, tp, sl) in STRATEGY_GRID]
+
 
 # Preprocessing artifacts path
 PREPROCESSING_ARTIFACTS_PATH = FEATURES_OUTPUT_PATH / "preprocessing"
