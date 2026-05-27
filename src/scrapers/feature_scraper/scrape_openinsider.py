@@ -3,14 +3,18 @@
 import datetime
 import time
 from io import StringIO
+
 import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from joblib import Parallel, delayed
 from tqdm import tqdm
+
 from src import config
+
 from .feature_scraper_util.general_utils import add_date_features
+
 
 def _parse_insider_titles(df: pd.DataFrame) -> pd.DataFrame:
     # print(f"[TITLES-DEBUG] Input shape: {df.shape}")
@@ -19,33 +23,52 @@ def _parse_insider_titles(df: pd.DataFrame) -> pd.DataFrame:
         for role in ["CEO", "CFO", "Pres", "VP", "Dir", "TenPercent"]:
             df[role] = 0
         return df
-    
+
     df["Title_lower"] = df["Title"].str.lower()
-    df["CEO"] = df["Title_lower"].str.contains("ceo|chief executive officer", na=False).astype(int)
-    df["CFO"] = df["Title_lower"].str.contains("cfo|chief financial officer", na=False).astype(int)
+    df["CEO"] = (
+        df["Title_lower"]
+        .str.contains("ceo|chief executive officer", na=False)
+        .astype(int)
+    )
+    df["CFO"] = (
+        df["Title_lower"]
+        .str.contains("cfo|chief financial officer", na=False)
+        .astype(int)
+    )
     df["Pres"] = df["Title_lower"].str.contains("pres|president", na=False).astype(int)
     df["VP"] = df["Title_lower"].str.contains("vp|vice president", na=False).astype(int)
     df["Dir"] = df["Title_lower"].str.contains("dir|director", na=False).astype(int)
-    df["TenPercent"] = df["Title_lower"].str.contains("10%|ten percent", na=False).astype(int)
-    
+    df["TenPercent"] = (
+        df["Title_lower"].str.contains("10%|ten percent", na=False).astype(int)
+    )
+
     df.drop(columns=["Title_lower", "Title"], inplace=True)
     # print(f"[TITLES-DEBUG] Output shape after adding role flags: {df.shape}")
     # print(f"[TITLES-DEBUG] Role distribution - CEO: {df['CEO'].sum()}, CFO: {df['CFO'].sum()}, Dir: {df['Dir'].sum()}")
     return df
 
+
 def _aggregate_daily_trades(df: pd.DataFrame) -> pd.DataFrame:
     # print(f"[AGG-DEBUG] Input shape for aggregation: {df.shape}")
     # print(f"[AGG-DEBUG] Input columns: {df.columns.tolist()}")
-    
+
     agg_funcs = {
-        "Value": "sum", "Qty": "sum", "Owned": "last", "dOwn": "last",
-        "CEO": "max", "CFO": "max", "Pres": "max", "VP": "max", 
-        "Dir": "max", "TenPercent": "max", "Days_Since_Trade": "mean",
+        "Value": "sum",
+        "Qty": "sum",
+        "Owned": "last",
+        "dOwn": "last",
+        "CEO": "max",
+        "CFO": "max",
+        "Pres": "max",
+        "VP": "max",
+        "Dir": "max",
+        "TenPercent": "max",
+        "Days_Since_Trade": "mean",
     }
-    
+
     grouped = df.groupby(["Ticker", pd.Grouper(key="Filing Date", freq="D")])
     df_agg = grouped.agg(agg_funcs)
-    
+
     if "Price" in df.columns and df["Price"].notna().any():
         df_agg["Price"] = grouped.apply(
             lambda x: np.average(x["Price"], weights=x["Value"]), include_groups=False
@@ -54,16 +77,19 @@ def _aggregate_daily_trades(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df_agg["Price"] = np.nan
         # print(f"[AGG-DEBUG] No Price data available, filled with NaN")
-    
+
     df_agg["Number_of_Purchases"] = grouped.size()
     df_agg = df_agg.reset_index()
-    
+
     return df_agg
 
-def _scrape_date_range_worker(date_range: tuple, request_header: dict) -> pd.DataFrame | None:
+
+def _scrape_date_range_worker(
+    date_range: tuple, request_header: dict
+) -> pd.DataFrame | None:
     start_date, end_date = date_range
     # print(f"[SCRAPE-WORKER] Processing range {start_date.date()} to {end_date.date()}")
-    
+
     base_url = "http://openinsider.com/screener?"
     all_data_for_range = []
     page = 1
@@ -90,7 +116,7 @@ def _scrape_date_range_worker(date_range: tuple, request_header: dict) -> pd.Dat
                 break
             page += 1
             time.sleep(0.25)
-        except requests.RequestException as e:
+        except requests.RequestException:
             break
 
     full_df = pd.concat(all_data_for_range, ignore_index=True)
@@ -98,11 +124,12 @@ def _scrape_date_range_worker(date_range: tuple, request_header: dict) -> pd.Dat
     # print(f"[SCRAPE-WORKER] Combined range data: {full_df.shape}")
     return full_df
 
+
 def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
     print(f"\n[MAIN-INFO] Starting scrape_openinsider for {num_weeks} weeks")
-    
+
     # Step 1: Create date ranges
-    end_date = datetime.datetime.now()# - datetime.timedelta(days=30*3)
+    end_date = datetime.datetime.now()  # - datetime.timedelta(days=30*3)
     date_ranges = []
     for week in range(num_weeks):
         start_date = end_date - datetime.timedelta(days=7)
@@ -114,28 +141,37 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
 
     # Step 2: Parallel scraping
     print(f"Initiating parallel scrape for {num_weeks} weeks of data...")
-    tasks = [delayed(_scrape_date_range_worker)(dr, config.REQUESTS_HEADER) for dr in date_ranges]
+    tasks = [
+        delayed(_scrape_date_range_worker)(dr, config.REQUESTS_HEADER)
+        for dr in date_ranges
+    ]
     results = Parallel(n_jobs=-2)(tqdm(tasks, desc="Scraping weekly data"))
 
     all_data_frames = [df for df in results if df is not None]
-    print(f"[MAIN-INFO] Retrieved {len(all_data_frames)} successful dataframes from {len(date_ranges)} attempts")
-    
+    print(
+        f"[MAIN-INFO] Retrieved {len(all_data_frames)} successful dataframes from {len(date_ranges)} attempts"
+    )
+
     if not all_data_frames:
         print("[MAIN-ERROR] No data was scraped. Exiting.")
         return pd.DataFrame()
 
     df = pd.concat(all_data_frames, ignore_index=True)
-    print(f"[MAIN-INFO] Raw concatenated data: {df.shape[0]} rows, {df.shape[1]} columns")
-    
+    print(
+        f"[MAIN-INFO] Raw concatenated data: {df.shape[0]} rows, {df.shape[1]} columns"
+    )
+
     initial_shape = df.shape
     df = df.drop_duplicates()
     duplicates_removed = initial_shape[0] - df.shape[0]
-    print(f"[MAIN-INFO] Removed {duplicates_removed} duplicate rows, shape now: {df.shape}")
+    print(
+        f"[MAIN-INFO] Removed {duplicates_removed} duplicate rows, shape now: {df.shape}"
+    )
 
     # Step 3: Data Cleaning
-    print(f"[MAIN-INFO] Starting data cleaning phase")
+    print("[MAIN-INFO] Starting data cleaning phase")
     # print(f"[MAIN-DEBUG] Available columns: {df.columns.tolist()}")
-    
+
     # Column renaming
     if "ΔOwn" in df.columns:
         df.rename(columns={"ΔOwn": "dOwn"}, inplace=True)
@@ -144,17 +180,17 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
     # Drop rows with missing Ticker
     before_ticker_drop = len(df)
     df.dropna(subset=["Ticker"], inplace=True)
-    ticker_dropped = before_ticker_drop - len(df)
+    before_ticker_drop - len(df)
     # print(f"[MAIN-DEBUG] Dropped {ticker_dropped} rows due to missing Ticker")
 
     # Date conversion
     # print("[MAIN-DEBUG] Converting date columns...")
     df["Filing Date"] = pd.to_datetime(df["Filing Date"], errors="coerce")
     df["Trade Date"] = pd.to_datetime(df["Trade Date"], errors="coerce")
-    
+
     before_date_drop = len(df)
     df.dropna(subset=["Filing Date", "Trade Date"], inplace=True)
-    date_dropped = before_date_drop - len(df)
+    before_date_drop - len(df)
     # print(f"[MAIN-DEBUG] Dropped {date_dropped} rows due to invalid dates")
 
     # Numeric conversion
@@ -168,17 +204,19 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
                 errors="coerce",
             )
             after_conversion = df[col].notna().sum()
-            conversion_loss = before_conversion - after_conversion
+            before_conversion - after_conversion
             # print(f"[MAIN-DEBUG] {col}: {conversion_loss} values became NaN during conversion")
 
     # dOwn conversion
     if "dOwn" in df.columns:
-        before_down = df["dOwn"].notna().sum()
+        df["dOwn"].notna().sum()
         df["dOwn"] = pd.to_numeric(
-            df["dOwn"].astype(str).replace({r"%": "", r"\+": "", r"New": "999", r">": ""}, regex=True),
+            df["dOwn"]
+            .astype(str)
+            .replace({r"%": "", r"\+": "", r"New": "999", r">": ""}, regex=True),
             errors="coerce",
         )
-        after_down = df["dOwn"].notna().sum()
+        df["dOwn"].notna().sum()
         # print(f"[MAIN-DEBUG] dOwn: {before_down - after_down} values became NaN during conversion")
     else:
         df["dOwn"] = np.nan
@@ -187,14 +225,14 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
     # Drop rows with missing critical values
     before_value_drop = len(df)
     df.dropna(subset=["Filing Date", "Trade Date", "Value"], inplace=True)
-    value_dropped = before_value_drop - len(df)
+    before_value_drop - len(df)
     # print(f"[MAIN-DEBUG] Dropped {value_dropped} rows due to missing Filing Date, Trade Date, or Value")
 
     # Step 4: Filtering
     if "Trade Type" in df.columns:
         before_purchase_filter = len(df)
         df = df[df["Trade Type"].str.contains("P - Purchase", na=False)].copy()
-        purchase_filtered = before_purchase_filter - len(df)
+        before_purchase_filter - len(df)
         # print(f"[MAIN-DEBUG] Filtered out {purchase_filtered} non-purchase transactions")
     else:
         print("[MAIN-WARN] No Trade Type column found, assuming all are purchases")
@@ -209,17 +247,17 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
     print("[MAIN-INFO] Adding derived features...")
     df["Days_Since_Trade"] = (df["Filing Date"] - df["Trade Date"]).dt.days
     # print(f"[MAIN-DEBUG] Days_Since_Trade - Mean: {df['Days_Since_Trade'].mean():.1f}, Max: {df['Days_Since_Trade'].max()}")
-    
+
     df = _parse_insider_titles(df)
 
     # Step 6: Aggregation
     print("[MAIN-INFO] Aggregating daily trades...")
     df_agg = _aggregate_daily_trades(df)
-    
+
     # Step 7: Final feature engineering
     print("[MAIN-INFO] Adding final date features...")
     df_final = add_date_features(df_agg)
-    
+
     # Add log transformations
     if "Value" in df_final.columns:
         df_final["log_Value"] = np.log1p(df_final["Value"].fillna(0))
@@ -227,25 +265,44 @@ def scrape_openinsider(num_weeks: int) -> pd.DataFrame:
         df_final["log_Qty"] = np.log1p(df_final["Qty"].fillna(0))
     if "Price" in df_final.columns:
         df_final["log_Price"] = np.log1p(df_final["Price"].fillna(0))
-    
+
     # print(f"[MAIN-DEBUG] Added log transformations for Value, Qty, Price")
 
     # Final column selection
     final_cols = [
-        "Ticker", "Filing Date", "Number_of_Purchases", "Price", "Qty", "Owned", "dOwn", "Value",
-        "Days_Since_Trade", "CEO", "CFO", "Pres", "VP", "Dir", "TenPercent",
-        "log_Value", "log_Qty", "log_Price", "Day_Of_Year", "Day_Of_Quarter"
+        "Ticker",
+        "Filing Date",
+        "Number_of_Purchases",
+        "Price",
+        "Qty",
+        "Owned",
+        "dOwn",
+        "Value",
+        "Days_Since_Trade",
+        "CEO",
+        "CFO",
+        "Pres",
+        "VP",
+        "Dir",
+        "TenPercent",
+        "log_Value",
+        "log_Qty",
+        "log_Price",
+        "Day_Of_Year",
+        "Day_Of_Quarter",
     ]
-    
+
     available_cols = [col for col in final_cols if col in df_final.columns]
     missing_cols = [col for col in final_cols if col not in df_final.columns]
-    
+
     # print(f"[MAIN-DEBUG] Available final columns: {len(available_cols)}")
     if missing_cols:
         print(f"[MAIN-WARN] Missing expected columns: {missing_cols}")
-    
+
     df_final = df_final.reindex(columns=available_cols)
-    
-    print(f"\n[MAIN-SUCCESS] Final insider trading dataset: {df_final.shape[0]} rows, {df_final.shape[1]} columns")
-    
+
+    print(
+        f"\n[MAIN-SUCCESS] Final insider trading dataset: {df_final.shape[0]} rows, {df_final.shape[1]} columns"
+    )
+
     return df_final

@@ -9,7 +9,6 @@ import requests
 
 # Import the necessary libraries for robust parallelism
 from joblib import Parallel, delayed
-from tqdm import tqdm
 
 
 # --- HELPER FUNCTIONS (Self-Contained and Unchanged) ---
@@ -65,7 +64,7 @@ def fetch_ticker_cik_map(request_header: str):
             str(v["ticker"]).upper(): str(v["cik_str"]).zfill(10) for v in data.values()
         }
         return mapping
-    except Exception as e:
+    except Exception:
         return {}
 
 
