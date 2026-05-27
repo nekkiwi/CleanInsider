@@ -137,3 +137,9 @@ PERFORMANCE_LOG_PATH = LOG_DIR / "performance"
 
 # --- Data Scraping Settings for Live Inference ---
 LIVE_SCRAPE_WEEKS = 2  # Number of weeks to scrape for live inference
+
+# OHLCV source preference. With a complete local Stooq DB present, prefer it
+# (fast, offline, no rate limits) for the bulk historical scrape; fall back to
+# yfinance for tickers missing locally. Live CI runs without the Stooq DB simply
+# fall through to yfinance. Override with PREFER_LOCAL_OHLCV=false.
+PREFER_LOCAL_OHLCV = os.environ.get("PREFER_LOCAL_OHLCV", "true").lower() == "true"
