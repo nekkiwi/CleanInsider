@@ -143,3 +143,10 @@ LIVE_SCRAPE_WEEKS = 2  # Number of weeks to scrape for live inference
 # yfinance for tickers missing locally. Live CI runs without the Stooq DB simply
 # fall through to yfinance. Override with PREFER_LOCAL_OHLCV=false.
 PREFER_LOCAL_OHLCV = os.environ.get("PREFER_LOCAL_OHLCV", "true").lower() == "true"
+
+# Bulk-scrape speed switch. When true, OHLCV loading uses local Stooq ONLY (no
+# yfinance fallback) — tickers missing from Stooq (mostly delisted) drop instantly
+# instead of each incurring a ~15s yfinance timeout + rate-limit, which dominates a
+# full scrape. Set OHLCV_LOCAL_ONLY=true for bulk scraping; leave false for live
+# inference so the small recent-ticker set can still fall back to yfinance.
+OHLCV_LOCAL_ONLY = os.environ.get("OHLCV_LOCAL_ONLY", "false").lower() == "true"
