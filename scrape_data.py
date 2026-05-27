@@ -24,7 +24,7 @@ def main(num_weeks: int, target_only: bool):
     print("...Environment setup complete.\n")
 
     # 2. Run the full feature scraping pipeline
-    num_folds = 5
+    num_folds = config.NUM_VALIDATION_FOLDS
     if not target_only:
         run_feature_scraping_pipeline(num_weeks=num_weeks, config=config)
 
@@ -38,19 +38,10 @@ def main(num_weeks: int, target_only: bool):
         )
 
     # --- Target Generation Pipeline (can be run after preprocessing) ---
-    target_combinations = [
-        {"time": "1w", "tp": 0.05, "sl": -0.05},
-        {"time": "1w", "tp": 0.05, "sl": -0.10},
-        {"time": "1w", "tp": 0.10, "sl": -0.10},
-        {"time": "1w", "tp": 0.10, "sl": -0.05},
-        {"time": "1w", "tp": 0.15, "sl": -0.05},
-        {"time": "1w", "tp": 0.15, "sl": -0.10},
-    ]
-
-    # Uncomment the following lines to run target generation
+    # Strategy grid is centralized in config so targets and training stay in sync.
     run_target_generation_pipeline(
         config=config,
-        target_combinations=target_combinations,
+        target_combinations=config.strategy_target_combinations(),
         n_splits=num_folds + 2,
         batch_size=250,
         debug=False,

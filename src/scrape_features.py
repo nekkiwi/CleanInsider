@@ -5,10 +5,26 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.scrapers.feature_scraper.load_annual_statements import (
+    generate_annual_statements,
+)
+from src.scrapers.feature_scraper.load_macro_features import generate_macro_features
+from src.scrapers.feature_scraper.load_technical_indicators import (
+    generate_technical_indicators,
+)
+from src.scrapers.feature_scraper.scrape_openinsider import scrape_openinsider
 
-def run_feature_scraping_pipeline(num_weeks: int, config):
+
+def run_feature_scraping_pipeline(num_weeks: int, config, rescrape: bool = True):
     """
-    Orchestrates the new, component-based feature scraping pipeline.
+    Orchestrates the component-based feature scraping pipeline.
+
+    Args:
+        num_weeks: Number of weeks of OpenInsider history to scrape.
+        config: The project config module (paths, headers).
+        rescrape: When True (default) re-scrape every component from source.
+            When False, skip scraping and only re-merge the existing component
+            parquets in data/scrapers/features/components/ (fast path).
     """
     start_time = time.time()
 
@@ -21,20 +37,32 @@ def run_feature_scraping_pipeline(num_weeks: int, config):
     tech_path = components_dir / "all_technical_indicators.parquet"
     macro_path = components_dir / "all_macro_data.parquet"
 
-    # --- Step 1: Get base insider trading data ---
-    # print("--- Step 1: Scraping base insider data ---")
-    # base_df = scrape_openinsider(num_weeks=num_weeks)
-    # if base_df.empty:
-    #     print("No base data scraped. Halting.")
-    #     return
-    # base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
-    # # base_df.to_parquet(base_path, index=False)
+    if rescrape:
+        # --- Step 1: Get base insider trading data ---
+        print("--- Step 1: Scraping base insider data ---")
+        base_df = scrape_openinsider(num_weeks=num_weeks)
+        if base_df.empty:
+            print("No base data scraped. Halting.")
+            return
+        base_df["Filing Date"] = pd.to_datetime(base_df["Filing Date"])
+        base_df.to_parquet(base_path, index=False)
 
-    # # # --- Step 2, 3, 4: Generate feature components in parallel (conceptually) ---
-    # generate_annual_statements(base_df, annual_path, sec_parquet_dir=config.EDGAR_DOWNLOAD_PATH, request_header=config.REQUESTS_HEADER)
-    # # # base_df = pd.read_parquet(base_path)
-    # generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
-    # generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
+        # --- Steps 2, 3, 4: Generate feature components ---
+        print("--- Step 2: Generating annual statement (fundamental) features ---")
+        generate_annual_statements(
+            base_df,
+            annual_path,
+            sec_parquet_dir=config.EDGAR_DOWNLOAD_PATH,
+            request_header=config.REQUESTS_HEADER,
+        )
+        print("--- Step 3: Generating technical indicators ---")
+        generate_technical_indicators(base_df, config.STOOQ_DATABASE_PATH, tech_path)
+        print("--- Step 4: Generating macro features ---")
+        generate_macro_features(base_df, config.STOOQ_DATABASE_PATH, macro_path)
+    else:
+        print(
+            "--- Steps 1-4 skipped (rescrape=False): re-merging existing components ---"
+        )
 
     # --- Step 5: Merge all feature components ---
     print("\n--- Step 5: Merging all feature components ---")

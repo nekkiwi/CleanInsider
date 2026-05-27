@@ -1,30 +1,23 @@
 # file: train_walk_forward.py
 
+import argparse
 import time
 
+from src import config
 from src.training_pipeline import ModelTrainer
 
 
-def main():
-    print("--- Starting Walk-Forward Training Pipeline ---")
+def main(model_type: str = "LightGBM"):
+    print(f"--- Starting Walk-Forward Training Pipeline ({model_type}) ---")
     start_time = time.time()
 
-    strategies = [
-        ("1w", 0.05, -0.05),
-        ("1w", 0.10, -0.10),
-        ("1w", 0.10, -0.05),
-        ("1w", 0.15, -0.05),
-        ("1w", 0.15, -0.10),
-    ]
-
-    binary_thresholds_pct = [2]
-    model_type = "LightGBM"
-    top_n_features = 100
-    seeds = [42, 123, 2024, 456, 567]
-
-    # This now correctly controls the number of walk-forward validation folds.
-    # The final test set is handled automatically.
-    num_folds = 6
+    # Strategy grid and training params are centralized in config so that
+    # target generation and training never drift apart.
+    strategies = config.STRATEGY_GRID
+    binary_thresholds_pct = config.BINARY_THRESHOLDS_PCT
+    top_n_features = config.TOP_N_FEATURES
+    seeds = config.ENSEMBLE_SEEDS
+    num_folds = config.NUM_VALIDATION_FOLDS
 
     trainer = ModelTrainer(num_folds=num_folds)
     trainer.run(
@@ -40,4 +33,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Walk-forward model training.")
+    parser.add_argument(
+        "--model-type",
+        default="LightGBM",
+        help="Estimator family to train (e.g. LightGBM, TabPFN). Default: LightGBM.",
+    )
+    args = parser.parse_args()
+    main(model_type=args.model_type)
