@@ -217,10 +217,15 @@ def _attach_entry_costs(
             how="left",
         )
         # Round-trip drag == full quoted spread (half-spread each on entry+exit).
-        round_trip = merged["corwin_schultz_spread"]
-        positions["entry_cost"] = round_trip.fillna(DEFAULT_ROUND_TRIP_COST).to_numpy()
+        # MISSING spread => the name was too illiquid/penny for Corwin-Schultz to
+        # estimate (or absent) => leave NaN = UNTRADEABLE. Mirrors live: a real
+        # Alpaca quote on such a name exceeds MAX_SPREAD_COST and the PositionSizer
+        # skips it. (A cheap default here would let penny stocks dominate the
+        # tradeable set with a fictional 1% cost.)
+        positions["entry_cost"] = merged["corwin_schultz_spread"].to_numpy()
     else:
-        positions["entry_cost"] = DEFAULT_ROUND_TRIP_COST
+        # No spread table at all -> cannot assess tradeability -> untradeable.
+        positions["entry_cost"] = np.nan
     return positions
 
 
@@ -336,28 +341,31 @@ def backtest_strategy(
     )
     positions = _attach_entry_costs(positions, test_spreads)
 
-    # --- Tradability filter: skip names the live system would reject ---
-    # entry_cost is now the round-trip cost == full quoted spread, so compare it
-    # directly. Mirrors PositionSizer dropping names above config.MAX_SPREAD_COST.
+    # --- Tradability filter ---
+    # 1. Missing spread = CS could not rate the name (illiquid/penny) => UNTRADEABLE,
+    #    mirroring live where a real quote would exceed MAX_SPREAD_COST and be skipped.
+    positions = positions[positions["entry_cost"].notna()].reset_index(drop=True)
+    # 2. entry_cost is the round-trip cost == full quoted spread; compare directly.
     if max_spread_cost is not None:
-        keep = positions["entry_cost"] <= max_spread_cost
-        positions = positions[keep].reset_index(drop=True)
-        if positions.empty:
-            return {
-                "strategy_str": strat_str,
-                "Timepoint": timepoint,
-                "TP": tp,
-                "SL": sl,
-                "sharpe": np.nan,
-                "raw_sharpe": np.nan,
-                "sortino": np.nan,
-                "max_drawdown": np.nan,
-                "cagr": np.nan,
-                "ann_vol": np.nan,
-                "total_alpha": np.nan,
-                "n_trades": 0,
-                "n_days": 0,
-            }
+        positions = positions[
+            positions["entry_cost"] <= max_spread_cost
+        ].reset_index(drop=True)
+    if positions.empty:
+        return {
+            "strategy_str": strat_str,
+            "Timepoint": timepoint,
+            "TP": tp,
+            "SL": sl,
+            "sharpe": np.nan,
+            "raw_sharpe": np.nan,
+            "sortino": np.nan,
+            "max_drawdown": np.nan,
+            "cagr": np.nan,
+            "ann_vol": np.nan,
+            "total_alpha": np.nan,
+            "n_trades": 0,
+            "n_days": 0,
+        }
 
     # --- Daily MTM portfolio simulation ---
     horizon_days = horizon_business_days(timepoint)
