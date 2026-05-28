@@ -157,6 +157,25 @@ LIQUID_UNIVERSE_ONLY = os.getenv("LIQUID_UNIVERSE_ONLY", "true").lower() == "tru
 # src/scrapers/feature_scraper/generate_adv.py.
 ADV_COMPONENT_PATH = FEATURES_OUTPUT_PATH / "components" / "adv.parquet"
 
+# --- LIVE validated-strategy gate ---
+# When True (default), LIVE inference (run_inference.py) trades ONLY the
+# validated config: the liquid universe (live Price>=LIQUID_PRICE_MIN and live
+# ADV>=LIQUID_ADV_MIN) restricted to CEO/CFO insider buys (CEO==1 OR CFO==1).
+# Research showed buy-everything micro-cap is uncapturable; this filtered config
+# is the regime-robust ~0.78 net Sharpe at realistic next-day-open entry.
+# Set LIVE_LIQUID_CEOCFO_FILTER=false to fall back to the legacy buy-everything
+# live path (reversible / for A-B testing).
+LIVE_LIQUID_CEOCFO_FILTER = (
+    os.getenv("LIVE_LIQUID_CEOCFO_FILTER", "true").lower() == "true"
+)
+
+# Sleeve scale for the small live paper sleeve. The vol_target sizer already caps
+# per-name risk (RISK_PER_TRADE_PCT=1.25%) and aggregate net exposure
+# (TARGET_NET_EXPOSURE=50%); SLEEVE_SCALE multiplies the final dollar sizes so the
+# whole book can be dialed down (e.g. 0.25 for a 25%-of-target sleeve) without
+# touching the per-name risk math. Default 1.0 == no change.
+SLEEVE_SCALE = float(os.getenv("SLEEVE_SCALE", "1.0"))
+
 
 def strategy_target_combinations():
     """STRATEGY_GRID as the {time, tp, sl} dicts expected by target generation."""

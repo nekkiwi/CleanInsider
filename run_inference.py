@@ -57,6 +57,93 @@ def derive_strategy_from_model(model_id: str) -> tuple:
     return config.DEFAULT_STRATEGY
 
 
+def apply_validated_strategy_filter(
+    signals_df: pd.DataFrame,
+    trading_client: AlpacaTradingClient,
+) -> pd.DataFrame:
+    """Restrict live signals to the VALIDATED strategy universe.
+
+    The validated config (regime-robust ~0.78 net Sharpe at realistic next-day-
+    open entry) trades only:
+
+      1. LIQUID names: live Price >= config.LIQUID_PRICE_MIN AND live ADV
+         (60-day median dollar volume from AlpacaTradingClient.get_adv) >=
+         config.LIQUID_ADV_MIN. Missing ADV -> dropped (unknown liquidity is
+         treated as untradeable).
+      2. CEO/CFO insider buys only (CEO==1 OR CFO==1) -- the quality filter that
+         lifted the realistic edge.
+
+    Gated by config.LIVE_LIQUID_CEOCFO_FILTER (default True) so the legacy
+    buy-everything path is still reachable for A-B testing. When the flag is off,
+    the input frame is returned unchanged.
+
+    Args:
+        signals_df: Buy signals (must carry Ticker and Price; CEO/CFO columns are
+            used when present).
+        trading_client: AlpacaTradingClient providing get_adv() for live ADV.
+
+    Returns:
+        Filtered signals frame with an added ``adv`` column for the survivors.
+    """
+    if not getattr(config, "LIVE_LIQUID_CEOCFO_FILTER", True):
+        print("[INFO] LIVE_LIQUID_CEOCFO_FILTER disabled -> legacy buy-everything path")
+        return signals_df
+
+    if signals_df.empty:
+        return signals_df
+
+    print("\n=== Validated-Strategy Filter (liquid + CEO/CFO) ===")
+    df = signals_df.copy()
+    n0 = len(df)
+
+    # --- CEO/CFO gate -------------------------------------------------------
+    if "CEO" in df.columns or "CFO" in df.columns:
+        ceo = df["CEO"].fillna(0) if "CEO" in df.columns else 0
+        cfo = df["CFO"].fillna(0) if "CFO" in df.columns else 0
+        ceocfo_mask = (ceo == 1) | (cfo == 1)
+        n_before = len(df)
+        df = df[ceocfo_mask].copy()
+        print(f"  CEO/CFO gate: kept {len(df)}/{n_before} (CEO==1 or CFO==1)")
+    else:
+        print(
+            "  [WARN] CEO/CFO columns absent from signals -> CEO/CFO gate SKIPPED. "
+            "Surface CEO/CFO from live_features (follow-up)."
+        )
+
+    if df.empty:
+        print("  [INFO] No CEO/CFO buys remain")
+        return df
+
+    # --- Liquid gate: price -------------------------------------------------
+    price_min = config.LIQUID_PRICE_MIN
+    if "Price" in df.columns:
+        n_before = len(df)
+        df = df[df["Price"].fillna(0) >= price_min].copy()
+        print(f"  Price gate (>= ${price_min:g}): kept {len(df)}/{n_before}")
+    else:
+        print("  [WARN] No Price column -> price gate SKIPPED")
+
+    if df.empty:
+        print("  [INFO] No names above the price floor")
+        return df
+
+    # --- Liquid gate: live ADV ---------------------------------------------
+    adv_min = config.LIQUID_ADV_MIN
+    tickers = df["Ticker"].tolist()
+    adv_map = trading_client.get_adv(tickers)
+    df["adv"] = df["Ticker"].map(adv_map)
+    n_before = len(df)
+    # NaN ADV (unknown liquidity) fails the comparison -> dropped.
+    df = df[df["adv"] >= adv_min].copy()
+    print(
+        f"  ADV gate (>= ${adv_min:,.0f}): kept {len(df)}/{n_before} "
+        f"(got live ADV for {len(adv_map)}/{len(tickers)})"
+    )
+
+    print(f"  Validated universe: {len(df)}/{n0} signals retained")
+    return df
+
+
 def download_models_from_drive(gdrive_client: GoogleDriveClient) -> bool:
     """Download models from Google Drive."""
     if not gdrive_client.is_connected():
@@ -120,6 +207,18 @@ def generate_signals(
     )
 
     print(f"  Generated {len(signals_df)} buy signals")
+
+    # Carry identifier/quality columns (Price, CEO, CFO) from the scraped feature
+    # table back onto the signals so the validated-strategy filter (liquid +
+    # CEO/CFO) and sizing can see them. get_buy_signals drops everything but
+    # Ticker/Filing Date.
+    if not signals_df.empty:
+        carry_cols = [c for c in ("Price", "CEO", "CFO") if c in features_df.columns]
+        if carry_cols:
+            merge_src = features_df[["Ticker", "Filing Date", *carry_cols]].copy()
+            signals_df = signals_df.merge(
+                merge_src, on=["Ticker", "Filing Date"], how="left"
+            )
 
     return signals_df
 
@@ -206,6 +305,26 @@ def size_and_execute_trades(
 
     if sized_df.empty:
         print("[INFO] No positions after sizing")
+        return pd.DataFrame()
+
+    # Small-sleeve scale: dial the whole book down for the live paper sleeve
+    # without touching the per-name risk math. Default 1.0 == no change.
+    sleeve_scale = getattr(config, "SLEEVE_SCALE", 1.0)
+    if sleeve_scale != 1.0:
+        sized_df["dollar_size"] = sized_df["dollar_size"] * sleeve_scale
+        if "price" in sized_df.columns:
+            safe_prices = sized_df["price"].replace(0, pd.NA)
+            sized_df["shares"] = (
+                (sized_df["dollar_size"] / safe_prices).fillna(0).astype(int)
+            )
+        # Re-drop anything that fell below the dollar minimum after scaling.
+        sized_df = sized_df[
+            sized_df["dollar_size"] >= position_sizer.min_position_dollars
+        ].copy()
+        print(f"  Applied SLEEVE_SCALE={sleeve_scale:g} -> {len(sized_df)} positions")
+
+    if sized_df.empty:
+        print("[INFO] No positions after sleeve scaling")
         return pd.DataFrame()
 
     print(f"  Sized {len(sized_df)} positions")
@@ -373,6 +492,13 @@ def main():
     # Generate signals
     min_date = datetime.datetime.now() - datetime.timedelta(days=args.days_back)
     signals_df = generate_signals(predictor, feature_generator, min_date)
+
+    # Restrict to the VALIDATED strategy universe (liquid + CEO/CFO) so the live
+    # book matches the backtest that produced the realistic net edge. Reversible
+    # via config.LIVE_LIQUID_CEOCFO_FILTER. Entry timing: next-day-open -- CI runs
+    # this post market open, sizing/execution happen the same session.
+    if not signals_df.empty:
+        signals_df = apply_validated_strategy_filter(signals_df, trading_client)
 
     # Save signals if requested
     if args.output and not signals_df.empty:

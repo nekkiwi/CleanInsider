@@ -303,6 +303,71 @@ class AlpacaTradingClient:
 
         return atr_map
 
+    def get_adv(self, symbols: List[str], period: int = 60) -> Dict[str, float]:
+        """
+        Compute live Average Dollar Volume (ADV) per symbol from recent daily bars.
+
+        Mirrors get_atr's guarded bar-fetch. Fetches ~period daily bars via the
+        alpaca-py StockHistoricalDataClient.get_stock_bars and returns the MEDIAN
+        of Close*Volume over the window (median ignores one-off volume spikes that
+        would inflate a mean). This is the live counterpart of the point-in-time
+        ADV used to define the liquid training/backtest universe.
+
+        Args:
+            symbols: List of stock tickers.
+            period: ADV lookback in daily bars (default 60, matching ADV_WINDOW).
+
+        Returns:
+            Dict of {symbol: adv}. Symbols with missing/insufficient bar data are
+            OMITTED so the caller treats unknown liquidity as untradeable.
+        """
+        if not self.client or not getattr(self, "data_client", None):
+            return {}
+
+        if not symbols:
+            return {}
+
+        try:
+            request = StockBarsRequest(
+                symbol_or_symbols=list(symbols),
+                timeframe=TimeFrame.Day,
+                limit=period,
+            )
+            barset = self.data_client.get_stock_bars(request)
+            data = getattr(barset, "data", barset)
+        except Exception as e:  # noqa: BLE001 - network/SDK errors -> empty map
+            print(f"[WARN] Failed to fetch bars for ADV: {e}. Using fallback.")
+            return {}
+
+        adv_map: Dict[str, float] = {}
+        for symbol in symbols:
+            bars = data.get(symbol) if hasattr(data, "get") else None
+            if not bars:
+                continue
+
+            window = bars[-period:]
+            dollar_vols = []
+            for bar in window:
+                close = getattr(bar, "close", None)
+                volume = getattr(bar, "volume", None)
+                if close is None or volume is None:
+                    continue
+                dollar_vols.append(float(close) * float(volume))
+
+            if not dollar_vols:
+                continue
+
+            dollar_vols.sort()
+            n = len(dollar_vols)
+            mid = n // 2
+            if n % 2 == 1:
+                adv = dollar_vols[mid]
+            else:
+                adv = (dollar_vols[mid - 1] + dollar_vols[mid]) / 2.0
+            adv_map[symbol] = adv
+
+        return adv_map
+
     def place_market_order(
         self, symbol: str, qty: int, side: str = "buy"
     ) -> Optional[Dict]:
