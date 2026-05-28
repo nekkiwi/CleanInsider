@@ -435,6 +435,67 @@ class GoogleDriveClient:
             print(f"[ERROR] Failed to upload file: {e}")
             return None
 
+    def upload_or_update(
+        self,
+        local_path: Path,
+        file_id: str = None,
+        name: str = None,
+        folder_id: str = None,
+    ) -> Optional[str]:
+        """Create or overwrite-in-place a single Drive file.
+
+        Used by the position ledger (Stage 5a): the ledger parquet is downloaded,
+        mutated, then written back over the SAME Drive file each run.
+
+        - If ``file_id`` is given, overwrite that file in place via
+          ``files().update(fileId=...)`` and return the same id.
+        - If ``file_id`` is None, create a new file (under ``folder_id``, default
+          ``models_folder_id``) and return the newly assigned id.
+
+        Returns the file id, or None on error / no Drive service.
+        """
+        local_path = Path(local_path)
+
+        if not self.drive_service:
+            print("[WARN] Drive service not available, cannot upload_or_update")
+            return None
+
+        if not local_path.exists():
+            print(f"[ERROR] File not found: {local_path}")
+            return None
+
+        media = MediaFileUpload(str(local_path), resumable=True)
+
+        try:
+            if file_id:
+                # Overwrite existing file content in place. Do NOT pass parents
+                # in the body on update (Drive rejects parent changes here).
+                updated = (
+                    self.drive_service.files()
+                    .update(fileId=file_id, media_body=media, fields="id")
+                    .execute()
+                )
+                result_id = updated.get("id", file_id)
+                print(f"[INFO] Updated Drive file in place -> {result_id}")
+                return result_id
+
+            target_folder = folder_id or self.models_folder_id
+            file_metadata = {
+                "name": name or local_path.name,
+                "parents": [target_folder],
+            }
+            created = (
+                self.drive_service.files()
+                .create(body=file_metadata, media_body=media, fields="id")
+                .execute()
+            )
+            result_id = created.get("id")
+            print(f"[INFO] Created Drive file {file_metadata['name']} -> {result_id}")
+            return result_id
+        except Exception as e:
+            print(f"[ERROR] Failed to upload_or_update file: {e}")
+            return None
+
     def download_models(
         self, local_models_path: Path = None, strategy: str = None
     ) -> int:
