@@ -96,6 +96,13 @@ class TestTrainingInferenceParity:
             val_features, val_labels, on=["Ticker", "Filing Date"], how="inner"
         )
 
+        # Merge spreads too (training does this in _load_data_for_set, and
+        # corwin_schultz_spread is a real selected feature). Without it the
+        # parity check would skip on a phantom "missing feature".
+        val_spreads = pd.read_parquet(self.targets_path / "validation_spreads.parquet")
+        val_spreads["Filing Date"] = pd.to_datetime(val_spreads["Filing Date"])
+        merged = pd.merge(merged, val_spreads, on=["Ticker", "Filing Date"], how="left")
+
         # Load model and metadata
         classifier = joblib.load(self.models_path / "classifier.pkl")
         metadata = joblib.load(self.models_path / "metadata.pkl")
@@ -152,6 +159,13 @@ class TestTrainingInferenceParity:
         merged = pd.merge(
             val_features, val_labels, on=["Ticker", "Filing Date"], how="inner"
         )
+
+        # Merge spreads too (training does this in _load_data_for_set, and
+        # corwin_schultz_spread is a real selected feature). Without it the
+        # parity check would skip on a phantom "missing feature".
+        val_spreads = pd.read_parquet(self.targets_path / "validation_spreads.parquet")
+        val_spreads["Filing Date"] = pd.to_datetime(val_spreads["Filing Date"])
+        merged = pd.merge(merged, val_spreads, on=["Ticker", "Filing Date"], how="left")
 
         # Load models
         classifier = joblib.load(self.models_path / "classifier.pkl")

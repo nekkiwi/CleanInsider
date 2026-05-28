@@ -194,6 +194,35 @@ def _ensemble_signals(
     )
 
 
+def _attach_liquidity(
+    positions: pd.DataFrame, test_features_df: pd.DataFrame
+) -> pd.DataFrame:
+    """Attach point-in-time ``Price`` and ``adv`` to positions for the liquid filter.
+
+    Reads the columns straight off ``test_features_df`` (keyed Ticker + Filing
+    Date == entry_date). Missing columns -> NaN (treated as unknown liquidity ->
+    untradeable downstream).
+    """
+    positions = positions.copy()
+    cols = [c for c in ("Price", "adv") if c in test_features_df.columns]
+    if not cols:
+        positions["Price"] = np.nan
+        positions["adv"] = np.nan
+        return positions
+    liq = test_features_df[["Ticker", "Filing Date", *cols]].copy()
+    liq["Filing Date"] = pd.to_datetime(liq["Filing Date"])
+    liq = liq.drop_duplicates(subset=["Ticker", "Filing Date"])
+    merged = positions.merge(
+        liq,
+        left_on=["Ticker", "entry_date"],
+        right_on=["Ticker", "Filing Date"],
+        how="left",
+    )
+    for c in ("Price", "adv"):
+        positions[c] = merged[c].to_numpy() if c in merged.columns else np.nan
+    return positions
+
+
 def _attach_entry_costs(
     positions: pd.DataFrame, test_spreads: Optional[pd.DataFrame]
 ) -> pd.DataFrame:
@@ -247,6 +276,9 @@ def backtest_strategy(
     max_spread_cost: Optional[float] = None,
     per_name_cap: Optional[float] = None,
     max_gross_exposure: float = 1.0,
+    liquid_mode: Optional[bool] = None,
+    entry_offset: int = 0,
+    entry_open: bool = False,
 ) -> dict:
     """Backtest one ensemble strategy on the held-out test set.
 
@@ -261,12 +293,21 @@ def backtest_strategy(
     folds, seeds, vote_threshold : default to config values.
     model_loader : maps a model dir -> (classifier, regressor, metadata);
         overridable so tests can stub models without joblib/pickles.
-    max_spread_cost : tradability liquidity filter on the full quoted spread;
-        defaults to ``config.MAX_SPREAD_COST`` (filter ON). Names whose quoted
-        spread (== round-trip entry_cost) exceeds this are dropped, mirroring the
-        live PositionSizer. Pass a large value (e.g. ``float("inf")``) to disable.
+    max_spread_cost : tradability liquidity filter on the full quoted spread
+        (LEGACY / CS mode only); defaults to ``config.MAX_SPREAD_COST`` (filter
+        ON). Names whose quoted spread (== round-trip entry_cost) exceeds this are
+        dropped, mirroring the live PositionSizer. Pass a large value
+        (e.g. ``float("inf")``) to disable. Ignored when ``liquid_mode`` is True.
     per_name_cap, max_gross_exposure : capital-model caps threaded into
         ``simulate_daily_portfolio`` (default 5% per name, 100% gross).
+    entry_offset : delay every position's entry by ``k`` trading days (default 0).
+        Threaded into ``simulate_daily_portfolio`` for the entry-timing stress.
+    liquid_mode : when True (default ``config.LIQUID_UNIVERSE_ONLY``), the
+        tradability filter is the liquid universe (Price >= LIQUID_PRICE_MIN AND
+        adv >= LIQUID_ADV_MIN, read from the test features) and every position is
+        charged a FLAT round-trip cost of ``config.LIQUID_ROUND_TRIP_COST`` — the
+        Corwin-Schultz spread is not used. When False, the legacy CS spread cost +
+        max_spread_cost filter applies (back-compat for existing tests).
 
     Returns a dict of metrics keyed by ``strategy_str`` (see ``run_all``).
     """
@@ -278,6 +319,8 @@ def backtest_strategy(
         max_spread_cost = config.MAX_SPREAD_COST
     if per_name_cap is None:
         per_name_cap = config.MAX_POSITION_SIZE
+    if liquid_mode is None:
+        liquid_mode = getattr(config, "LIQUID_UNIVERSE_ONLY", False)
     models_base_path = Path(models_base_path or config.MODELS_PATH)
 
     timepoint, tp, sl = strategy
@@ -339,17 +382,32 @@ def backtest_strategy(
             "weight": weights.to_numpy(),
         }
     )
-    positions = _attach_entry_costs(positions, test_spreads)
+    if liquid_mode:
+        # --- Liquid universe: FLAT round-trip cost + price/ADV tradability ---
+        positions = _attach_liquidity(positions, test_features_df)
+        positions["entry_cost"] = float(
+            getattr(config, "LIQUID_ROUND_TRIP_COST", 0.002)
+        )
+        price_min = getattr(config, "LIQUID_PRICE_MIN", 0.0)
+        adv_min = getattr(config, "LIQUID_ADV_MIN", 0.0)
+        price = pd.to_numeric(positions["Price"], errors="coerce")
+        adv = pd.to_numeric(positions["adv"], errors="coerce")
+        # NaN price/adv => unknown liquidity => untradeable => drop.
+        keep = (price >= price_min) & (adv >= adv_min)
+        positions = positions[keep.fillna(False)].reset_index(drop=True)
+    else:
+        positions = _attach_entry_costs(positions, test_spreads)
 
-    # --- Tradability filter ---
-    # 1. Missing spread = CS could not rate the name (illiquid/penny) => UNTRADEABLE,
-    #    mirroring live where a real quote would exceed MAX_SPREAD_COST and be skipped.
-    positions = positions[positions["entry_cost"].notna()].reset_index(drop=True)
-    # 2. entry_cost is the round-trip cost == full quoted spread; compare directly.
-    if max_spread_cost is not None:
-        positions = positions[
-            positions["entry_cost"] <= max_spread_cost
-        ].reset_index(drop=True)
+        # --- Tradability filter (legacy CS mode) ---
+        # 1. Missing spread = CS could not rate the name (illiquid/penny) =>
+        #    UNTRADEABLE, mirroring live where a real quote would exceed
+        #    MAX_SPREAD_COST and be skipped.
+        positions = positions[positions["entry_cost"].notna()].reset_index(drop=True)
+        # 2. entry_cost is the round-trip cost == full quoted spread; compare directly.
+        if max_spread_cost is not None:
+            positions = positions[
+                positions["entry_cost"] <= max_spread_cost
+            ].reset_index(drop=True)
     if positions.empty:
         return {
             "strategy_str": strat_str,
@@ -379,6 +437,8 @@ def backtest_strategy(
         db_path=db_path,
         per_name_cap=per_name_cap,
         max_gross_exposure=max_gross_exposure,
+        entry_offset=entry_offset,
+        entry_open=entry_open,
     )
 
     alpha_metrics = compute_portfolio_metrics(

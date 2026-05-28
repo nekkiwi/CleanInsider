@@ -202,6 +202,92 @@ def test_entry_not_found_within_7_days_returns_empty():
     assert s.empty
 
 
+def test_entry_offset_shifts_entry_price_and_window():
+    """entry_offset=k enters at Close[entry_idx+k] and shifts the whole window."""
+    dates = BDAYS[:8]
+    # Strictly increasing close; no TP/SL hit at +/-50%.
+    close = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
+    prices = _ohlcv(dates, close)
+    spx = _flat_spx(dates)
+
+    # offset 0: enter @ Close[0]=100, lookahead bars 1..3, exit @ Close[3]=103.
+    s0 = simulate_position_daily_alpha(
+        prices, spx, entry_date=dates[0], tp=0.50, sl=-0.50, horizon_days=3
+    )
+    assert list(s0.index) == [dates[1], dates[2], dates[3]]
+    np.testing.assert_allclose(
+        (1 + s0.values).prod() - 1, 103.0 / 100.0 - 1, rtol=1e-12
+    )
+
+    # offset 2: enter @ Close[2]=102, lookahead bars 3..5, exit @ Close[5]=105.
+    s2 = simulate_position_daily_alpha(
+        prices,
+        spx,
+        entry_date=dates[0],
+        tp=0.50,
+        sl=-0.50,
+        horizon_days=3,
+        entry_offset=2,
+    )
+    assert list(s2.index) == [dates[3], dates[4], dates[5]]
+    np.testing.assert_allclose(
+        (1 + s2.values).prod() - 1, 105.0 / 102.0 - 1, rtol=1e-12
+    )
+    # The two windows must differ (offset genuinely shifts entry + exit).
+    assert list(s0.index) != list(s2.index)
+
+
+def test_entry_offset_shifts_tp_hit():
+    """A TP that fires only after the offset is reached must change the exit."""
+    dates = BDAYS[:8]
+    # Flat at 100 until bar 4, then jumps so TP (+5%) only fires from bar 4 on.
+    close = [100.0, 100.0, 100.0, 100.0, 106.0, 106.0, 106.0, 106.0]
+    high = [100.0, 100.0, 100.0, 100.0, 107.0, 107.0, 107.0, 107.0]
+    low = [100.0, 100.0, 100.0, 100.0, 105.0, 105.0, 105.0, 105.0]
+    prices = _ohlcv(dates, close, high=high, low=low)
+    spx = _flat_spx(dates)
+
+    # offset 0: entry @100, horizon 2 -> bars 1,2 never hit TP -> horizon exit @100.
+    s0 = simulate_position_daily_alpha(
+        prices, spx, entry_date=dates[0], tp=0.05, sl=-0.50, horizon_days=2
+    )
+    np.testing.assert_allclose((1 + s0.values).prod() - 1, 0.0, atol=1e-12)
+
+    # offset 3: entry @ Close[3]=100, lookahead bar 4 high 107 >= 105 -> TP @ +5%.
+    s3 = simulate_position_daily_alpha(
+        prices,
+        spx,
+        entry_date=dates[0],
+        tp=0.05,
+        sl=-0.50,
+        horizon_days=2,
+        entry_offset=3,
+    )
+    assert list(s3.index) == [dates[4]]
+    np.testing.assert_allclose(s3.values, [0.05], rtol=1e-12)
+
+
+def test_entry_offset_zero_is_backward_compatible():
+    """Default offset=0 matches the no-offset call exactly."""
+    dates = BDAYS[:6]
+    close = [100.0, 102.0, 101.0, 103.0, 99.0, 98.0]
+    prices = _ohlcv(dates, close)
+    spx = _flat_spx(dates)
+    a = simulate_position_daily_alpha(
+        prices, spx, entry_date=dates[0], tp=0.50, sl=-0.50, horizon_days=5
+    )
+    b = simulate_position_daily_alpha(
+        prices,
+        spx,
+        entry_date=dates[0],
+        tp=0.50,
+        sl=-0.50,
+        horizon_days=5,
+        entry_offset=0,
+    )
+    pd.testing.assert_series_equal(a, b)
+
+
 # ---------------------------------------------------------------------------
 # simulate_daily_portfolio
 # ---------------------------------------------------------------------------

@@ -66,15 +66,29 @@ def simulate_position_daily_alpha(
     tp: float,
     sl: float,
     horizon_days: int,
+    entry_offset: int = 0,
+    entry_open: bool = False,
 ) -> pd.Series:
     """
     Daily alpha return series for ONE position.
+
+    ``entry_open=True`` models the realistic live entry: buy at the NEXT trading
+    day's OPEN after the filing-date bar (base_idx+1), holding from that open
+    (intraday high/low of the entry day can trigger TP/SL). Overrides
+    ``entry_offset``. Default False keeps the filing-day-close behavior.
 
     Returns a ``pd.Series`` indexed by business date covering entry_idx+1 through
     the exit day. Each value is the stock's close-to-close return minus the SPX
     close-to-close return over the same day. On the exit day:
       * TP/SL hit intrabar  -> stock return is to the tp/sl threshold PRICE
       * horizon end         -> stock return is to that day's Close
+
+    ``entry_offset`` (default 0) delays entry by ``k`` trading days: the entry
+    price becomes ``Close[entry_idx + k]``, the lookahead window starts at
+    ``entry_idx + k + 1``, and the SPX entry is taken on the offset entry date.
+    This shifts the WHOLE TP/SL/horizon window forward by ``k`` bars (an
+    entry-timing stress test), so the realized exit and return reflect entering
+    ``k`` trading days later. ``entry_offset=0`` is the original behavior.
 
     Returns an empty Series when OHLCV is missing/insufficient or the entry is
     not found within ``ENTRY_TOLERANCE_DAYS`` of ``entry_date``.
@@ -91,23 +105,43 @@ def simulate_position_daily_alpha(
     stock_high = stock_prices["High"].to_numpy(dtype=float)
     stock_low = stock_prices["Low"].to_numpy(dtype=float)
     stock_close = stock_prices["Close"].to_numpy(dtype=float)
+    stock_open = (
+        stock_prices["Open"].to_numpy(dtype=float)
+        if "Open" in stock_prices.columns
+        else stock_close
+    )
 
     spx_dates, spx_close = spx_arrays
 
     # --- Entry lookup (mirror generate_targets) ---
-    entry_idx = np.searchsorted(stock_dates, entry_np, side="left")
-    if entry_idx >= len(stock_dates):
+    base_idx = np.searchsorted(stock_dates, entry_np, side="left")
+    if base_idx >= len(stock_dates):
         return empty
 
-    actual_trade_date = stock_dates[entry_idx]
+    actual_trade_date = stock_dates[base_idx]
     if (actual_trade_date - entry_np) > np.timedelta64(ENTRY_TOLERANCE_DAYS, "D"):
         return empty
 
-    entry_price = stock_close[entry_idx]
+    if entry_open:
+        # Realistic live entry: buy at the NEXT day's OPEN; hold from that open
+        # (entry-day intraday can trigger TP/SL -> lookahead starts that day).
+        entry_idx = base_idx + 1
+        if entry_idx >= len(stock_dates):
+            return empty
+        actual_trade_date = stock_dates[entry_idx]
+        entry_price = stock_open[entry_idx]
+        lookahead_start = entry_idx
+    else:
+        # Delay entry by ``entry_offset`` trading days (entry-timing stress test).
+        entry_offset = max(int(entry_offset), 0)
+        entry_idx = base_idx + entry_offset
+        if entry_idx >= len(stock_dates):
+            return empty
+        actual_trade_date = stock_dates[entry_idx]
+        entry_price = stock_close[entry_idx]
+        lookahead_start = entry_idx + 1
     if entry_price <= 0:
         return empty
-
-    lookahead_start = entry_idx + 1
     if lookahead_start >= len(stock_dates):
         return empty
 
@@ -177,15 +211,26 @@ def _position_daily_returns(
     tp: float,
     sl: float,
     horizon_days: int,
+    entry_offset: int = 0,
+    entry_open: bool = False,
 ) -> tuple[pd.Series, pd.Series]:
     """
     Return both RAW (stock-only) and ALPHA daily return series for one position.
 
     The raw series is the alpha series with the SPX leg added back, so both are
-    guaranteed to share the exact same index and exit logic.
+    guaranteed to share the exact same index and exit logic. ``entry_offset``
+    delays entry by ``k`` trading days; ``entry_open`` enters at the next day's
+    open (see ``simulate_position_daily_alpha``).
     """
     alpha = simulate_position_daily_alpha(
-        stock_prices, spx_arrays, entry_date, tp, sl, horizon_days
+        stock_prices,
+        spx_arrays,
+        entry_date,
+        tp,
+        sl,
+        horizon_days,
+        entry_offset,
+        entry_open,
     )
     if alpha.empty:
         return alpha, alpha
@@ -194,7 +239,15 @@ def _position_daily_returns(
     # daily returns and adding them back. Cheaper: recompute the raw path
     # directly here using the same exit decision the alpha call made.
     raw = _raw_position_daily_returns(
-        stock_prices, spx_arrays, entry_date, tp, sl, horizon_days, alpha.index
+        stock_prices,
+        spx_arrays,
+        entry_date,
+        tp,
+        sl,
+        horizon_days,
+        alpha.index,
+        entry_offset,
+        entry_open,
     )
     return raw, alpha
 
@@ -207,6 +260,8 @@ def _raw_position_daily_returns(
     sl: float,
     horizon_days: int,
     expected_index: pd.DatetimeIndex,
+    entry_offset: int = 0,
+    entry_open: bool = False,
 ) -> pd.Series:
     """Stock-only daily returns, aligned to ``expected_index``."""
     entry_np = np.datetime64(pd.Timestamp(entry_date), "ns")
@@ -214,10 +269,21 @@ def _raw_position_daily_returns(
     stock_high = stock_prices["High"].to_numpy(dtype=float)
     stock_low = stock_prices["Low"].to_numpy(dtype=float)
     stock_close = stock_prices["Close"].to_numpy(dtype=float)
+    stock_open = (
+        stock_prices["Open"].to_numpy(dtype=float)
+        if "Open" in stock_prices.columns
+        else stock_close
+    )
 
-    entry_idx = np.searchsorted(stock_dates, entry_np, side="left")
-    entry_price = stock_close[entry_idx]
-    lookahead_start = entry_idx + 1
+    base_idx = np.searchsorted(stock_dates, entry_np, side="left")
+    if entry_open:
+        entry_idx = base_idx + 1
+        entry_price = stock_open[entry_idx]
+        lookahead_start = entry_idx
+    else:
+        entry_idx = base_idx + max(int(entry_offset), 0)
+        entry_price = stock_close[entry_idx]
+        lookahead_start = entry_idx + 1
     end_idx = min(lookahead_start + horizon_days, len(stock_dates))
     high_w = stock_high[lookahead_start:end_idx]
     low_w = stock_low[lookahead_start:end_idx]
@@ -257,6 +323,8 @@ def simulate_daily_portfolio(
     db_path: Optional[str] = None,
     per_name_cap: Optional[float] = None,
     max_gross_exposure: float = 1.0,
+    entry_offset: int = 0,
+    entry_open: bool = False,
 ) -> pd.DataFrame:
     """
     Build a daily mark-to-market portfolio return series under a realistic
@@ -282,6 +350,10 @@ def simulate_daily_portfolio(
     max_gross_exposure : maximum total invested fraction on any day (default 1.0
         = no leverage). When the day's summed capped weights exceed this, the
         whole day's weights are scaled down by ``max_gross_exposure / exposure``.
+    entry_offset : delay every position's entry by ``k`` trading days (default 0
+        = enter at the first available trade date). Threaded into
+        ``_position_daily_returns`` -> ``simulate_position_daily_alpha`` so the
+        TP/SL/horizon window shifts forward ``k`` bars (entry-timing stress).
 
     Capital model
     -------------
@@ -335,7 +407,14 @@ def simulate_daily_portfolio(
         prices = ohlcv_cache[ticker]
 
         raw, alpha = _position_daily_returns(
-            prices, spx_arrays, row["entry_date"], tp, sl, horizon_days
+            prices,
+            spx_arrays,
+            row["entry_date"],
+            tp,
+            sl,
+            horizon_days,
+            entry_offset,
+            entry_open,
         )
         if alpha.empty:
             continue

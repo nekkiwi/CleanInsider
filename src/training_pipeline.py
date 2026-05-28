@@ -136,6 +136,55 @@ class ModelTrainer:
                 print(f"  [WARN] Spread file not found, but expected: {spread_path}")
                 merged_df["corwin_schultz_spread"] = np.nan
 
+        # --- Liquid-universe columns (Price + point-in-time ADV) ---
+        # Left-merge entry Price (from the master event list) and point-in-time
+        # ADV (from components/adv.parquet) so the liquidity filter in
+        # _prepare_strategy_data can drop illiquid names. These are FILTER columns,
+        # not model features (excluded from the feature matrix downstream).
+        merged_df = self._attach_liquidity_columns(merged_df)
+
+        return merged_df
+
+    def _attach_liquidity_columns(self, merged_df: pd.DataFrame) -> pd.DataFrame:
+        """Left-merge 'Price' (master event list) and 'adv' (adv.parquet).
+
+        Guards: if either source is absent, the corresponding column is filled
+        with NaN so downstream code can still run (NaN ADV -> dropped as unknown
+        liquidity when LIQUID_UNIVERSE_ONLY is on).
+        """
+        if "Filing Date" in merged_df.columns:
+            merged_df["Filing Date"] = pd.to_datetime(merged_df["Filing Date"])
+
+        # Price from the master event list (point-in-time entry price).
+        if "Price" not in merged_df.columns:
+            master_path = getattr(config, "MASTER_EVENT_LIST_PATH", None)
+            if master_path is not None and Path(master_path).exists():
+                master_df = pd.read_parquet(master_path)
+                if "Price" in master_df.columns:
+                    price_df = master_df[["Ticker", "Filing Date", "Price"]].copy()
+                    price_df["Filing Date"] = pd.to_datetime(price_df["Filing Date"])
+                    price_df = price_df.drop_duplicates(
+                        subset=["Ticker", "Filing Date"]
+                    )
+                    merged_df = pd.merge(
+                        merged_df, price_df, on=["Ticker", "Filing Date"], how="left"
+                    )
+            if "Price" not in merged_df.columns:
+                merged_df["Price"] = np.nan
+
+        # Point-in-time ADV from the components table.
+        if "adv" not in merged_df.columns:
+            adv_path = getattr(config, "ADV_COMPONENT_PATH", None)
+            if adv_path is not None and Path(adv_path).exists():
+                adv_df = pd.read_parquet(adv_path)[["Ticker", "Filing Date", "adv"]]
+                adv_df["Filing Date"] = pd.to_datetime(adv_df["Filing Date"])
+                adv_df = adv_df.drop_duplicates(subset=["Ticker", "Filing Date"])
+                merged_df = pd.merge(
+                    merged_df, adv_df, on=["Ticker", "Filing Date"], how="left"
+                )
+            else:
+                merged_df["adv"] = np.nan
+
         return merged_df
 
     def _prepare_strategy_data(self, data_df, target_col, threshold_pct):
@@ -145,14 +194,59 @@ class ModelTrainer:
         data_df = data_df.dropna(subset=[target_col]).copy()
         if data_df.empty:
             return None, None, None
-        y_continuous, y_binary = data_df[target_col], (
-            data_df[target_col] >= (threshold_pct / 100.0)
-        ).astype(int)
+
+        liquid_only = getattr(config, "LIQUID_UNIVERSE_ONLY", False)
+        net_target = getattr(config, "NET_OF_COST_TARGET", False)
+
+        if liquid_only:
+            # --- Liquid-universe filter (replaces Corwin-Schultz liquidity) ---
+            # Define "liquid" by real dollar volume (ADV) + entry price. Drop
+            # untradeable / unknown-liquidity names. Price and adv are FILTER
+            # columns, never model features (excluded below).
+            price_min = getattr(config, "LIQUID_PRICE_MIN", 0.0)
+            adv_min = getattr(config, "LIQUID_ADV_MIN", 0.0)
+            price = pd.to_numeric(data_df.get("Price"), errors="coerce")
+            adv = pd.to_numeric(data_df.get("adv"), errors="coerce")
+            # NaN price/adv => unknown liquidity => untradeable => drop.
+            keep = (price >= price_min) & (adv >= adv_min)
+            data_df = data_df[keep.fillna(False)].copy()
+            if data_df.empty:
+                return None, None, None
+
+            if net_target:
+                # Net-of-cost target with a realistic FLAT round-trip cost (NOT
+                # the volatility-contaminated Corwin-Schultz spread): once the
+                # universe is restricted to liquid names, a single conservative
+                # flat cost best estimates capturable cost. Label net >= 0.
+                flat_cost = getattr(config, "LIQUID_ROUND_TRIP_COST", 0.002)
+                y_continuous = data_df[target_col] - flat_cost
+                y_binary = (y_continuous >= 0.0).astype(int)
+            else:
+                y_continuous = data_df[target_col]
+                y_binary = (data_df[target_col] >= (threshold_pct / 100.0)).astype(int)
+        elif net_target:
+            # Legacy net-of-cost target: subtract the round-trip spread (full
+            # quoted Corwin-Schultz) and label net >= 0. Drop events with no
+            # spread (untradeable). The model thus optimizes capturable return
+            # and learns to avoid high-spread names from the spread feature.
+            if "corwin_schultz_spread" not in data_df.columns:
+                return None, None, None
+            data_df = data_df.dropna(subset=["corwin_schultz_spread"])
+            if data_df.empty:
+                return None, None, None
+            y_continuous = data_df[target_col] - data_df["corwin_schultz_spread"]
+            y_binary = (y_continuous >= 0.0).astype(int)
+        else:
+            y_continuous = data_df[target_col]
+            y_binary = (data_df[target_col] >= (threshold_pct / 100.0)).astype(int)
+
         drop_prefixes = getattr(config, "DROP_FEATURE_PREFIXES", ())
+        # 'Price' and 'adv' are liquidity FILTER columns, NOT model features.
+        non_feature_cols = {"Ticker", "Filing Date", "Price", "adv"}
         feature_cols = [
             c
             for c in data_df.columns
-            if c not in ["Ticker", "Filing Date"]
+            if c not in non_feature_cols
             and not c.startswith("alpha_")
             and not (drop_prefixes and c.startswith(drop_prefixes))
         ]
