@@ -16,6 +16,7 @@ try:
     from alpaca.data.timeframe import TimeFrame
     from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import (
+        OrderClass,
         OrderSide,
         QueryOrderStatus,
         TimeInForce,
@@ -24,6 +25,8 @@ try:
         GetOrdersRequest,
         LimitOrderRequest,
         MarketOrderRequest,
+        StopLossRequest,
+        TakeProfitRequest,
     )
 
     ALPACA_AVAILABLE = True
@@ -442,6 +445,121 @@ class AlpacaTradingClient:
         except Exception as e:
             print(f"[ERROR] Failed to place limit order for {symbol}: {e}")
             return None
+
+    def place_bracket_order(
+        self,
+        symbol: str,
+        qty: int,
+        entry_limit_price: float,
+        tp_price: float,
+        sl_price: float,
+        side: str = "buy",
+        client_order_id: str = None,
+        sl_limit_price: float = None,
+    ) -> Optional[Dict]:
+        """
+        Place a bracket order (entry + take-profit + stop-loss legs).
+
+        Submits a single OrderClass.BRACKET limit entry with attached TP and SL
+        child legs. Bracket legs require TimeInForce.GTC. All three prices are
+        penny-rounded (2dp) before submission.
+
+        VALIDATION: requires ``sl_price < entry_limit_price < tp_price`` strictly,
+        evaluated AFTER rounding. Alpaca rejects the entire bracket if the legs
+        are not on the correct side of the entry, so if the ordering is invalid
+        (or collapses to equality after rounding) the order is SKIPPED: this logs
+        a warning and returns None rather than submitting a doomed order.
+
+        Args:
+            symbol: Stock ticker.
+            qty: Number of shares (must be > 0).
+            entry_limit_price: Limit price for the entry leg.
+            tp_price: Take-profit limit price (the profitable exit).
+            sl_price: Stop-loss trigger price (the losing exit).
+            side: 'buy' or 'sell' for the ENTRY leg (default 'buy').
+            client_order_id: Deterministic client order id (idempotency key).
+            sl_limit_price: Optional stop-loss limit price (stop-limit exit). When
+                omitted the SL leg executes as a market order on trigger.
+
+        Returns:
+            Dict {entry_order_id, tp_leg_id, sl_leg_id, client_order_id} on
+            success, or None if skipped/failed.
+        """
+        if not self.client:
+            return None
+
+        if qty <= 0:
+            print(f"[WARN] Invalid quantity {qty} for {symbol}")
+            return None
+
+        # Penny-round all prices to 2dp (equities trade in cents).
+        entry_r = round(float(entry_limit_price), 2)
+        tp_r = round(float(tp_price), 2)
+        sl_r = round(float(sl_price), 2)
+
+        # VALIDATE sl < entry < tp strictly, AFTER rounding. Equality (collapse
+        # after rounding) is also invalid -> skip.
+        if not (sl_r < entry_r < tp_r):
+            print(
+                f"[WARN] Skipping bracket for {symbol}: invalid price ordering "
+                f"after rounding (sl={sl_r}, entry={entry_r}, tp={tp_r}); "
+                f"requires sl < entry < tp."
+            )
+            return None
+
+        try:
+            order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+
+            take_profit = TakeProfitRequest(limit_price=tp_r)
+            sl_kwargs = {"stop_price": sl_r}
+            if sl_limit_price is not None:
+                sl_kwargs["limit_price"] = round(float(sl_limit_price), 2)
+            stop_loss = StopLossRequest(**sl_kwargs)
+
+            order_kwargs = dict(
+                symbol=symbol,
+                qty=qty,
+                side=order_side,
+                time_in_force=TimeInForce.GTC,
+                limit_price=entry_r,
+                order_class=OrderClass.BRACKET,
+                take_profit=take_profit,
+                stop_loss=stop_loss,
+            )
+            if client_order_id:
+                order_kwargs["client_order_id"] = client_order_id
+
+            order_request = LimitOrderRequest(**order_kwargs)
+            order = self.client.submit_order(order_request)
+
+            return self._bracket_to_dict(order, client_order_id)
+        except Exception as e:
+            print(f"[ERROR] Failed to place bracket order for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    def _bracket_to_dict(order, client_order_id: str = None) -> Dict:
+        """Extract entry + TP/SL leg ids from a submitted bracket order.
+
+        The TP leg is the LIMIT child; the SL leg is the STOP / STOP_LIMIT child.
+        Leg ids may be None if Alpaca has not yet materialised the children.
+        """
+        tp_leg_id = None
+        sl_leg_id = None
+        legs = getattr(order, "legs", None) or []
+        for leg in legs:
+            leg_type = str(getattr(leg, "type", "")).lower()
+            if "stop" in leg_type:
+                sl_leg_id = str(leg.id)
+            elif "limit" in leg_type:
+                tp_leg_id = str(leg.id)
+
+        return {
+            "entry_order_id": str(order.id),
+            "tp_leg_id": tp_leg_id,
+            "sl_leg_id": sl_leg_id,
+            "client_order_id": client_order_id,
+        }
 
     def cancel_order(self, order_id: str) -> bool:
         """

@@ -28,9 +28,29 @@ import pandas as pd
 from src import config
 from src.alpaca.google_drive import GoogleDriveClient
 from src.alpaca.inference import EnsemblePredictor
+from src.alpaca.ledger_sync import download_ledger, upload_ledger
 from src.alpaca.live_features import LiveFeatureGenerator
+from src.alpaca.position_ledger import PositionLedger
 from src.alpaca.position_sizer import PositionSizer
 from src.alpaca.trading_client import AlpacaTradingClient
+
+
+def strategy_to_str(strategy: tuple) -> str:
+    """(timepoint, tp, sl) -> folder/key string, e.g. '1w_tp0p05_sl-0p05'.
+
+    Mirrors the convention in config / inference / training_pipeline /
+    prepare_deploy (kept in sync deliberately).
+    """
+    timepoint, tp, sl = strategy
+    return (
+        f"{timepoint}"
+        f"_tp{str(tp).replace('.', 'p')}"
+        f"_sl{str(sl).replace('.', 'p')}"
+    )
+
+
+# Business-day horizon per timepoint code (used to time-box bracket exits).
+_HORIZON_DAYS = {"1w": 5, "2w": 10, "1m": 21}
 
 
 def derive_strategy_from_model(model_id: str) -> tuple:
@@ -229,27 +249,22 @@ def size_and_execute_trades(
     position_sizer: PositionSizer,
     dry_run: bool = False,
     strategy: tuple = None,
+    ledger: PositionLedger = None,
 ) -> pd.DataFrame:
-    """Size positions and execute trades."""
+    """Size positions and submit BRACKET orders, writing a ledger row each.
+
+    Each new entry is submitted as an OrderClass.BRACKET (limit entry + TP/SL
+    legs) so the position has its own exits the moment it fills; the
+    position-manager (run_reconcile.py) handles the time-based horizon exit and
+    the portfolio kill-switch. A deterministic client_order_id keyed on
+    (strategy_str, ticker, entry_date) makes re-runs idempotent — re-submitting
+    the same day's signal UPSERTs the ledger row and Alpaca rejects a duplicate
+    client_order_id, which is why this replaces the old skip-already-held check.
+    """
     print("\n=== Position Sizing and Trade Execution ===")
 
     if signals_df.empty:
         print("[INFO] No signals to trade")
-        return pd.DataFrame()
-
-    # Filter out stocks we already hold (avoid duplicate positions)
-    current_positions = trading_client.get_positions()
-    held_tickers = set(current_positions.keys()) if current_positions else set()
-
-    original_count = len(signals_df)
-    signals_df = signals_df[~signals_df["Ticker"].isin(held_tickers)].copy()
-    filtered_count = original_count - len(signals_df)
-
-    if filtered_count > 0:
-        print(f"[INFO] Filtered {filtered_count} signals for stocks already held")
-
-    if signals_df.empty:
-        print("[INFO] No new signals to trade (all already held)")
         return pd.DataFrame()
 
     # Get account info
@@ -351,19 +366,84 @@ def size_and_execute_trades(
         sized_df["order_status"] = "not_connected"
         return sized_df
 
-    print("\nStep 3: Executing trades...")
-    orders = trading_client.execute_signals(sized_df)
+    print("\nStep 3: Submitting BRACKET orders (entry + TP/SL legs)...")
+    strat = strategy or config.DEFAULT_STRATEGY
+    timepoint, tp_pct, sl_pct = strat
+    strategy_str = strategy_to_str(strat)
+    horizon_days = _HORIZON_DAYS.get(timepoint, 5)
+    entry_date = datetime.date.today()
 
-    # Map order results back to dataframe
-    order_map = {o["symbol"]: o for o in orders}
-    sized_df["order_id"] = sized_df["Ticker"].map(
-        lambda t: order_map.get(t, {}).get("id")
-    )
+    # Limit entry slightly below mid (0.1%) so it rests like the legacy buy path.
+    limit_buffer = 0.001
+
+    order_ids = {}
+    order_statuses = {}
+    submitted = 0
+
+    for _, row in sized_df.iterrows():
+        ticker = row["Ticker"]
+        qty = int(row.get("shares", 0))
+        ref_price = float(row.get("price", row.get("Price", 0)) or 0)
+
+        if qty <= 0 or ref_price <= 0:
+            order_statuses[ticker] = "skipped_no_price"
+            continue
+
+        entry_limit = ref_price * (1 - limit_buffer)
+        # Bracket legs are anchored on the strategy TP/SL relative to the entry.
+        # sl_pct is negative (e.g. -0.05); tp_pct positive (e.g. 0.05).
+        tp_price = entry_limit * (1 + tp_pct)
+        sl_price = entry_limit * (1 + sl_pct)
+
+        client_order_id = PositionLedger.make_client_order_id(
+            strategy_str, ticker, entry_date
+        )
+
+        result = trading_client.place_bracket_order(
+            symbol=ticker,
+            qty=qty,
+            entry_limit_price=entry_limit,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            side="buy",
+            client_order_id=client_order_id,
+        )
+
+        if not result:
+            order_statuses[ticker] = "skipped_invalid_bracket"
+            continue
+
+        submitted += 1
+        order_ids[ticker] = result["entry_order_id"]
+        order_statuses[ticker] = "submitted"
+
+        # One ledger row per submitted bracket (UPSERT on client_order_id).
+        if ledger is not None:
+            ledger.add_entry(
+                ticker=ticker,
+                strategy_str=strategy_str,
+                horizon_days=horizon_days,
+                entry_date=entry_date,
+                entry_price=round(entry_limit, 2),
+                qty=qty,
+                tp_price=round(tp_price, 2),
+                sl_price=round(sl_price, 2),
+                entry_order_id=result["entry_order_id"],
+                tp_leg_id=result["tp_leg_id"],
+                sl_leg_id=result["sl_leg_id"],
+            )
+
+        print(
+            f"  [BRACKET] {ticker}: {qty} @ ${entry_limit:.2f} "
+            f"TP ${tp_price:.2f} / SL ${sl_price:.2f}"
+        )
+
+    sized_df["order_id"] = sized_df["Ticker"].map(order_ids)
     sized_df["order_status"] = sized_df["Ticker"].map(
-        lambda t: order_map.get(t, {}).get("status", "not_submitted")
+        lambda t: order_statuses.get(t, "not_submitted")
     )
 
-    print(f"\n  Submitted {len(orders)} orders")
+    print(f"\n  Submitted {submitted} bracket orders")
 
     return sized_df
 
@@ -517,6 +597,10 @@ def main():
             print(signals_df.head(10).to_string())
         sys.exit(0)
 
+    # Load the persistent position ledger (Drive-backed, local fallback) so each
+    # submitted bracket gets a row for the exit-side reconcile (run_reconcile.py).
+    ledger = download_ledger(gdrive_client)
+
     # Size and execute trades
     trades_df = size_and_execute_trades(
         signals_df,
@@ -524,7 +608,12 @@ def main():
         position_sizer,
         dry_run=args.dry_run,
         strategy=strategy,
+        ledger=ledger,
     )
+
+    # Persist the ledger after live submission (skip on dry-run: no rows added).
+    if not args.dry_run:
+        upload_ledger(gdrive_client, ledger)
 
     # Log results to Google Sheets
     account = trading_client.get_account() or {}
